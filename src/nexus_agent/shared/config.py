@@ -1,4 +1,5 @@
-"""Environment-based settings for local infra (Postgres, Redis).
+"""Environment-based settings for local infra (Postgres, Redis, S3-compatible
+object storage).
 
 Mirrors the variables in .env.example / docker-compose.yml.
 """
@@ -19,6 +20,15 @@ class Settings(BaseSettings):
 
     redis_host: str = "localhost"
     redis_port: int = 6379
+
+    # S3-compatible object storage (Art. XII §8): images, masks, embeddings,
+    # heatmaps. No client wrapper yet -- Phase 3+ is the first consumer, once
+    # there's real per-cell data to store; this is just the connection
+    # convention so later phases don't have to invent it.
+    s3_endpoint_url: str = "http://localhost:9000"
+    s3_access_key: str = "nexus"
+    s3_secret_key: str = "nexus_dev_password"
+    s3_bucket: str = "nexus-agent"
 
     @property
     def postgres_dsn(self) -> str:
