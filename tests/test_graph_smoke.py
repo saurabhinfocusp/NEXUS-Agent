@@ -1,14 +1,18 @@
 """Fast, Docker-free graph tests using MemorySaver.
 
-Confirms the stub pipeline (Coordinator -> Vision -> Analyst -> Critic)
-flows end to end and that Critic's veto path re-routes to the originating
-agent with the objection attached, rather than terminating (Art. IV §3).
+Confirms the pipeline (Coordinator -> Vision -> Analyst -> Critic) flows
+end to end, that Coordinator's subtask plan correctly skips agents whose
+modality wasn't requested, and that Critic's veto path re-routes to the
+originating agent with the objection attached, rather than terminating
+(Art. IV §3).
 """
 
 import uuid
 
+import pytest
+
 from nexus_agent.graph.build import compile_with_memory
-from nexus_agent.shared.schemas import AgentName, Verdict
+from nexus_agent.shared.schemas import AgentName, AnalyticalGoal, Verdict
 
 
 def _initial_state(**overrides):
@@ -16,6 +20,7 @@ def _initial_state(**overrides):
         run_id=uuid.uuid4(),
         task_id=uuid.uuid4(),
         trace_id=uuid.uuid4(),
+        goal=AnalyticalGoal(sample_id="sample-1", modalities=["image", "expression"]),
         history=[],
         verdict=None,
         force_verdict=None,
@@ -45,6 +50,25 @@ def test_happy_path_flows_through_all_four_agents_to_report():
     assert result["history"][-1].to_agent == AgentName.REPORT
     for message in result["history"]:
         assert 0.0 <= message.confidence <= 1.0
+
+
+@pytest.mark.parametrize(
+    ("modalities", "expected_agents"),
+    [
+        (["image", "expression"], [AgentName.COORDINATOR, AgentName.VISION, AgentName.ANALYST, AgentName.CRITIC]),
+        (["image"], [AgentName.COORDINATOR, AgentName.VISION, AgentName.CRITIC]),
+        (["expression"], [AgentName.COORDINATOR, AgentName.ANALYST, AgentName.CRITIC]),
+    ],
+)
+def test_coordinator_subtask_plan_skips_agents_with_no_requested_modality(modalities, expected_agents):
+    graph = compile_with_memory()
+    run_id = uuid.uuid4()
+    goal = AnalyticalGoal(sample_id="sample-1", modalities=modalities)
+
+    result = graph.invoke(_initial_state(run_id=run_id, goal=goal), config=_config(run_id))
+
+    assert [m.from_agent for m in result["history"]] == expected_agents
+    assert result["verdict"] == Verdict.PASS
 
 
 def test_forced_veto_reroutes_to_originating_agent_then_completes():

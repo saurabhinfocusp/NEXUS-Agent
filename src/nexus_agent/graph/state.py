@@ -11,13 +11,15 @@ import operator
 from typing import Annotated, TypedDict
 from uuid import UUID
 
-from nexus_agent.shared.schemas import MessageEnvelope, Verdict
+from nexus_agent.shared.schemas import AgentName, AnalyticalGoal, MessageEnvelope, Verdict
 
 
 class RunState(TypedDict, total=False):
     run_id: UUID
     task_id: UUID
     trace_id: UUID
+    goal: AnalyticalGoal
+    subtask_plan: list[AgentName]
     history: Annotated[list[MessageEnvelope], operator.add]
     verdict: Verdict | None
     # Test-only hook: lets a test force Critic's stub verdict to exercise the

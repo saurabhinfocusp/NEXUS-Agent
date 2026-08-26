@@ -12,7 +12,7 @@ import pytest
 
 from nexus_agent.graph.build import compile_with_postgres
 from nexus_agent.shared.config import settings
-from nexus_agent.shared.schemas import AgentName, Verdict
+from nexus_agent.shared.schemas import AgentName, AnalyticalGoal, Verdict
 
 pytestmark = pytest.mark.integration
 
@@ -31,6 +31,7 @@ def _initial_state(run_id: uuid.UUID) -> dict:
         run_id=run_id,
         task_id=uuid.uuid4(),
         trace_id=uuid.uuid4(),
+        goal=AnalyticalGoal(sample_id="sample-1", modalities=["image", "expression"]),
         history=[],
         verdict=None,
         force_verdict=None,

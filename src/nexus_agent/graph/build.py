@@ -1,11 +1,14 @@
 """Assembles the Coordinator -> Vision -> Analyst -> Critic StateGraph
 (Constitution Art. III, Art. IV, Art. XII §4).
 
-Critic's verdict is a conditional edge: `pass` -> report node, `veto` ->
-back to the originating agent's node with the objection appended to
-payload, `escalate` -> human-review node. No edge exists from Vision or
-Analyst directly to a terminal node -- everything routes through Critic
-(Art. III §2).
+Two real routing decisions: Coordinator's conditional edge sends the task
+to whichever specialist its subtask plan starts with (Art. III §1), and
+Vision's conditional edge sends it on to Analyst only if Analyst is also in
+the plan, else straight to Critic. Critic's verdict is a conditional edge:
+`pass` -> report node, `veto` -> back to the originating agent's node with
+the objection appended to payload, `escalate` -> human-review node. No edge
+exists from Vision or Analyst directly to a terminal node -- everything
+routes through Critic (Art. III §2).
 """
 
 from __future__ import annotations
@@ -18,16 +21,30 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from nexus_agent.graph.nodes import (
-    analyst_node,
-    coordinator_node,
-    critic_node,
-    human_review_node,
-    report_node,
-    vision_node,
-)
+from nexus_agent.agents.analyst import analyst_node
+from nexus_agent.agents.coordinator import coordinator_node
+from nexus_agent.agents.critic import critic_node
+from nexus_agent.agents.vision import vision_node
 from nexus_agent.graph.state import RunState
-from nexus_agent.shared.schemas import Verdict
+from nexus_agent.shared.schemas import AgentName, Verdict
+
+
+def _report_node(state: RunState) -> dict:
+    """Terminal stub for the `pass` path. Real report assembly is a later phase."""
+    return {}
+
+
+def _human_review_node(state: RunState) -> dict:
+    """Terminal stub for the `escalate` path. Real review queue is Phase 5."""
+    return {}
+
+
+def _coordinator_router(state: RunState) -> str:
+    return state["subtask_plan"][0].value
+
+
+def _vision_router(state: RunState) -> str:
+    return "analyst" if AgentName.ANALYST in state["subtask_plan"] else "critic"
 
 
 def _critic_router(state: RunState) -> str:
@@ -49,12 +66,12 @@ def build_graph() -> StateGraph:
     graph.add_node("vision", vision_node)
     graph.add_node("analyst", analyst_node)
     graph.add_node("critic", critic_node)
-    graph.add_node("report", report_node)
-    graph.add_node("human_review", human_review_node)
+    graph.add_node("report", _report_node)
+    graph.add_node("human_review", _human_review_node)
 
     graph.set_entry_point("coordinator")
-    graph.add_edge("coordinator", "vision")
-    graph.add_edge("vision", "analyst")
+    graph.add_conditional_edges("coordinator", _coordinator_router, {"vision": "vision", "analyst": "analyst"})
+    graph.add_conditional_edges("vision", _vision_router, {"analyst": "analyst", "critic": "critic"})
     graph.add_edge("analyst", "critic")
     graph.add_conditional_edges(
         "critic",

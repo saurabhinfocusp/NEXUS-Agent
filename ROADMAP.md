@@ -1,6 +1,6 @@
 # NEXUS-Agent Work Plan
 
-**Status:** Phase 0 closed, Phase 1 next — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
+**Status:** Phase 0 & 1 closed, Phase 2 next — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
 **Team assumption:** small (1–3 generalists), work is mostly sequential with
 parallelization called out where it pays off once foundations exist.
 **Sizing:** relative effort per task — `S` (days), `M` (~1–2 weeks solo),
@@ -97,34 +97,37 @@ to start Phase 1.
 
 ### Steps
 
-- [ ] `M` Coordinator Agent: task decomposition from a user analytical goal
-      into a subtask graph, routing to specialist agents. No domain model
-      weights here — keep its logic strictly procedural per Art. III §1.
-- [ ] `L` Vision Specialist Agent shell: owns segmentation and encoding
-      calls (implementation deferred to Phase 3's model stack), but the
-      *agent* — its input/output contract, its place in the graph — is
-      built now. Output contract per cell must match Art. XII §2:
-      `{cell_id, centroid_xy, mask_polygon, embedding_vector[1024],
-      embedding_model_version}`.
-- [ ] `L` Analyst Agent shell: owns ingestion, statistical analysis, typing
-      and domain assignment, biological interpretation. Model/fusion logic
-      lands in Phase 3; the agent boundary and contract land now.
-- [ ] `M` Critic/XAI Agent shell: consumes Vision + Analyst outputs, checks
-      internal consistency and confidence, and can emit `pass` / `veto` /
-      `escalate`. XAI artifact generation (Grad-CAM++, SHAP) is Phase 4 —
-      here, just the control logic and verdict contract.
-- [ ] `M` Wire the veto/escalate contract as conditional graph edges
-      (Art. XII §4): `pass` → Reporting node, `veto` → back to originating
-      agent's node with objection appended to `payload`, `escalate` →
-      human-review queue node. This is the mechanism behind Art. IV §3
-      (right of re-route) — build it structurally, not as an if/else buried
-      in a handler.
-- [ ] `S` Enforce Art. III §2 at the graph level: no edge exists from Vision
-      or Analyst directly to the final report/user-facing node — every path
-      to "delivered" routes through Critic.
-- [ ] `S` Confidence field is mandatory, non-defaultable in every agent's
-      output payload (Art. III §3) — validate at the schema layer from
-      Phase 0, not by convention.
+- [x] `M` Coordinator Agent (`agents/coordinator.py`): `AnalyticalGoal`
+      (`sample_id`, `modalities`) in, `plan_subtasks()` decomposes it into
+      an ordered `subtask_plan` — `[VISION, ANALYST]` / `[VISION]` /
+      `[ANALYST]` depending on which modalities were requested. A lookup,
+      no domain model weights, per Art. III §1.
+- [x] `L` Vision Specialist Agent shell (`agents/vision.py`): output
+      contract `VisionCellRecord` matches Art. XII §2 exactly
+      (`cell_id, centroid_xy, mask_polygon, embedding_vector[1024],
+      embedding_model_version`), pydantic-enforced (embedding vector must
+      be exactly 1024-dim). Stub emits one synthetic record — real
+      segmentation/encoding is still Phase 3.
+- [x] `L` Analyst Agent shell (`agents/analyst.py`): `AnalystClaim`
+      contract (`cell_id, cell_type, spatial_domain, confidence,
+      provisional`). `provisional` is set from whether Vision ran for this
+      task (Art. V §1) — the one piece of Analyst's contract the
+      Constitution pins down ahead of Phase 3's real fusion/typing.
+- [x] `M` Critic/XAI Agent shell (`agents/critic.py`): real default
+      verdict logic — confidence < 0.15 → `escalate`, < 0.4 → `veto`, else
+      `pass` — applied to the most recent reviewed message, not a hardcoded
+      `pass`. The `force_verdict` test hook still exists but is now an
+      override of real logic, not the only logic. XAI artifact generation
+      (Grad-CAM++, SHAP) remains Phase 4.
+- [x] `M` Veto/escalate contract as conditional graph edges (Art. XII §4)
+      — carried over from Phase 0's `graph/build.py`, now driven by
+      Critic's real logic above instead of a stub default.
+- [x] `S` Art. III §2 enforced at the graph level — carried over from
+      Phase 0 (no edge from Vision/Analyst to a terminal node except via
+      Critic); still true with the new coordinator/vision conditional
+      routing added this phase.
+- [x] `S` Confidence field mandatory, non-defaultable — carried over from
+      Phase 0's `MessageEnvelope` (`shared/schemas.py`).
 
 ### Parallelization note
 
@@ -137,11 +140,21 @@ contract bugs early rather than at integration time).
 
 ### Exit criteria
 
-- All four agents exist as distinct graph nodes with typed, logged
+- [x] All four agents exist as distinct graph nodes with typed, logged
   contracts; a synthetic (stub-model) run exercises `pass`, `veto`, and
-  `escalate` paths at least once each.
-- No code path lets Vision or Analyst output reach a "final" state without
-  passing through Critic.
+  `escalate` paths at least once each (`tests/test_graph_smoke.py`,
+  `tests/test_critic.py`).
+- [x] No code path lets Vision or Analyst output reach a "final" state
+  without passing through Critic — true for all three subtask-plan shapes
+  (both modalities, image-only, expression-only), not just the full
+  pipeline.
+
+**Status: closed.** 35/35 tests passing (`pytest tests/`). Coordinator,
+Vision, Analyst, Critic now live in `src/nexus_agent/agents/` with real
+per-agent contracts and procedural logic; `AnalyticalGoal` lives in
+`shared/schemas.py` rather than `agents/coordinator.py` to avoid a
+coordinator↔state import cycle (`RunState` needs it as a real, non-deferred
+import for LangGraph's schema introspection). Ready to start Phase 2.
 
 ---
 

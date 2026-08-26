@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,3 +44,18 @@ class MessageEnvelope(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     trace_id: uuid.UUID
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+Modality = Literal["image", "expression"]
+
+
+class AnalyticalGoal(BaseModel):
+    """The Coordinator's input (Art. III §1): what to analyze and with which
+    modalities. Lives here (not in agents/coordinator.py) because RunState
+    (graph/state.py) needs it as a real import, and agents/coordinator.py
+    already imports RunState -- keeping it in shared/schemas.py avoids a
+    coordinator<->state import cycle.
+    """
+
+    sample_id: str
+    modalities: list[Modality] = Field(min_length=1)
