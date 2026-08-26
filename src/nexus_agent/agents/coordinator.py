@@ -35,6 +35,12 @@ def coordinator_node(state: RunState) -> dict:
     goal = state["goal"]
     subtask_plan = plan_subtasks(goal)
 
+    # Retained structured reasoning (Art. IV §2) for a non-trivial decision.
+    reasoning = [
+        f"requested modalities: {', '.join(goal.modalities)}",
+        f"decomposed to subtask plan: {', '.join(agent.value for agent in subtask_plan)}",
+    ]
+
     envelope = build_envelope(
         state,
         from_agent=AgentName.COORDINATOR,
@@ -42,6 +48,7 @@ def coordinator_node(state: RunState) -> dict:
         payload={
             "component_version": stamp(AgentName.COORDINATOR).model_dump(mode="json"),
             "subtask_plan": [agent.value for agent in subtask_plan],
+            "reasoning": reasoning,
         },
         confidence=1.0,
     )

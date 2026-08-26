@@ -26,3 +26,10 @@ class RunState(TypedDict, total=False):
     # veto/escalate routing without real quality-control logic (Phase 1+).
     # Consumed (cleared) by critic_node after one use to avoid infinite loops.
     force_verdict: Verdict | None
+    # Test-only hook: lets a test make a specialist agent's *first* attempt
+    # genuinely low-confidence, so Critic's real threshold logic (not
+    # force_verdict) triggers the veto (Art. IV §3). Unlike force_verdict,
+    # this is consumed implicitly -- a node ignores its own entry here once
+    # it detects it's retrying after a Critic veto (see agents/common.py's
+    # is_retry_after_veto), so the retry isn't artificially suppressed again.
+    stub_confidence_override: dict[AgentName, float] | None

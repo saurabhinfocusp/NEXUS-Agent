@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from nexus_agent.agents.common import build_envelope
+from nexus_agent.agents.common import build_envelope, resolve_stub_confidence
 from nexus_agent.graph.state import RunState
 from nexus_agent.shared.schemas import AgentName
 from nexus_agent.shared.versioning import stamp
@@ -41,6 +41,9 @@ def _stub_claim(*, provisional: bool) -> AnalystClaim:
 def analyst_node(state: RunState) -> dict:
     vision_ran = AgentName.VISION in state["subtask_plan"]
     claims = [_stub_claim(provisional=not vision_ran)]
+    confidence, reasoning = resolve_stub_confidence(
+        state, AgentName.ANALYST, default=0.5, retry_confidence=0.6
+    )
 
     envelope = build_envelope(
         state,
@@ -49,7 +52,8 @@ def analyst_node(state: RunState) -> dict:
         payload={
             "component_version": stamp(AgentName.ANALYST).model_dump(mode="json"),
             "claims": [claim.model_dump(mode="json") for claim in claims],
+            "reasoning": reasoning,
         },
-        confidence=0.5,
+        confidence=confidence,
     )
     return {"history": [envelope]}

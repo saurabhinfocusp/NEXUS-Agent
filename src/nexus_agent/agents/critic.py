@@ -31,7 +31,8 @@ def _default_verdict(confidence: float) -> Verdict:
 
 def critic_node(state: RunState) -> dict:
     reviewed = state["history"][-1]  # the agent output under review
-    verdict = state.get("force_verdict") or _default_verdict(reviewed.confidence)
+    forced = state.get("force_verdict")
+    verdict = forced or _default_verdict(reviewed.confidence)
 
     to_agent = {
         Verdict.PASS: AgentName.REPORT,
@@ -39,16 +40,27 @@ def critic_node(state: RunState) -> dict:
         Verdict.ESCALATE: AgentName.HUMAN_REVIEW,
     }[verdict]
 
+    # Retained structured reasoning (Art. IV §2) -- persisted as part of the
+    # checkpointed MessageEnvelope, not just logged for debugging.
+    if forced:
+        reasoning = [f"verdict forced to {verdict.value} for testing (force_verdict override)"]
+    else:
+        reasoning = [
+            f"reviewed confidence {reviewed.confidence:.2f} vs. thresholds "
+            f"(escalate < {ESCALATE_CONFIDENCE_THRESHOLD}, veto < {VETO_CONFIDENCE_THRESHOLD}) -> {verdict.value}"
+        ]
+
     payload = {
         "component_version": stamp(AgentName.CRITIC).model_dump(mode="json"),
         "verdict": verdict.value,
         "reviewed_confidence": reviewed.confidence,
+        "reasoning": reasoning,
     }
     if verdict == Verdict.VETO:
         payload["objection"] = (
-            f"confidence {reviewed.confidence:.2f} below veto threshold {VETO_CONFIDENCE_THRESHOLD}"
-            if not state.get("force_verdict")
-            else "stub: forced veto for testing the re-route path (Art. IV §3)"
+            "stub: forced veto for testing the re-route path (Art. IV §3)"
+            if forced
+            else f"confidence {reviewed.confidence:.2f} below veto threshold {VETO_CONFIDENCE_THRESHOLD}"
         )
 
     envelope = build_envelope(

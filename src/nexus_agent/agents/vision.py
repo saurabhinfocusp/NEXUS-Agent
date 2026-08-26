@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from nexus_agent.agents.common import build_envelope
+from nexus_agent.agents.common import build_envelope, resolve_stub_confidence
 from nexus_agent.graph.state import RunState
 from nexus_agent.shared.schemas import AgentName
 from nexus_agent.shared.versioning import stamp
@@ -45,6 +45,9 @@ def _stub_cell_record() -> VisionCellRecord:
 def vision_node(state: RunState) -> dict:
     to_agent = AgentName.ANALYST if AgentName.ANALYST in state["subtask_plan"] else AgentName.CRITIC
     cells = [_stub_cell_record()]
+    confidence, reasoning = resolve_stub_confidence(
+        state, AgentName.VISION, default=0.5, retry_confidence=0.6
+    )
 
     envelope = build_envelope(
         state,
@@ -53,7 +56,8 @@ def vision_node(state: RunState) -> dict:
         payload={
             "component_version": stamp(AgentName.VISION).model_dump(mode="json"),
             "cells": [cell.model_dump(mode="json") for cell in cells],
+            "reasoning": reasoning,
         },
-        confidence=0.5,
+        confidence=confidence,
     )
     return {"history": [envelope]}
