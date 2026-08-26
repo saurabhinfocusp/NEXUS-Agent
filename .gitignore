@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.conda/
+
+# Env vars / secrets
+.env
+
+# Data & model artifacts (large, not version-controlled)
+data/
+*.h5ad
+*.zarr/
+*.ome.tiff
+*.ome.tif
+checkpoints/
+
+# Docker volumes (if any bind-mounted locally)
+.docker/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log

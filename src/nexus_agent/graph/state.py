@@ -1,0 +1,26 @@
+"""LangGraph run state (Constitution Art. IV §1).
+
+`history` accumulates every MessageEnvelope emitted by any node via the
+`operator.add` reducer, so the full history of a task is inspectable from
+the checkpointer at any point, not only the final result.
+"""
+
+from __future__ import annotations
+
+import operator
+from typing import Annotated, TypedDict
+from uuid import UUID
+
+from nexus_agent.shared.schemas import MessageEnvelope, Verdict
+
+
+class RunState(TypedDict, total=False):
+    run_id: UUID
+    task_id: UUID
+    trace_id: UUID
+    history: Annotated[list[MessageEnvelope], operator.add]
+    verdict: Verdict | None
+    # Test-only hook: lets a test force Critic's stub verdict to exercise the
+    # veto/escalate routing without real quality-control logic (Phase 1+).
+    # Consumed (cleared) by critic_node after one use to avoid infinite loops.
+    force_verdict: Verdict | None
