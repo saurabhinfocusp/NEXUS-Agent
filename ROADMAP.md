@@ -1,6 +1,6 @@
 # NEXUS-Agent Work Plan
 
-**Status:** Draft — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
+**Status:** Phase 0 closed, Phase 1 next — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
 **Team assumption:** small (1–3 generalists), work is mostly sequential with
 parallelization called out where it pays off once foundations exist.
 **Sizing:** relative effort per task — `S` (days), `M` (~1–2 weeks solo),
@@ -39,40 +39,55 @@ infrastructure mid-flight.*
 
 ### Steps
 
-- [ ] `S` Repo scaffolding: package/module layout for `coordinator/`,
-      `vision/`, `analyst/`, `critic/`, `shared/` (schemas, config).
-- [ ] `M` Stand up LangGraph `StateGraph` skeleton with a Postgres-backed
-      checkpointer — even with stub nodes, this proves Art. IV §1
-      (inspectable run state) from day one rather than bolting it on later.
-- [ ] `M` Define the inter-agent message envelope as a JSON Schema per
-      Art. XII §4: `{run_id, task_id, from_agent, to_agent, payload,
-      confidence: float[0,1], trace_id, timestamp}`. Wire schema validation
-      at the bus boundary (reject, don't forward — this is the enforcement
-      mechanism behind Art. III §3).
-- [ ] `S` Choose and stand up the message bus (Redis Streams or equivalent)
-      — local/dev instance is enough for now; production topology is a
-      Phase 5 / infra concern (Art. XII §8).
-- [ ] `M` Implement the data container: `SpatialData`-based binding of
-      image + segmentation mask + expression matrix under one CRS, with
-      AnnData (`.h5ad`) as the per-sample object (Art. XII §1). Include the
-      registration-error check (<1 cell diameter, ≈10–15 µm) that marks a
-      sample `unregistered` when it fails.
-- [ ] `S` Object storage convention (S3-compatible, even if local/minio for
-      now) for images, masks, embeddings, heatmaps; Postgres tables for
-      `run_state`, provenance log, correction log (Art. XII §8) — schemas
-      only, tables can stay empty until their consuming phase.
-- [ ] `S` Versioning convention: every model/prompt/threshold gets a semver
-      recorded per-run as `{component, version}` (Art. XII §9). Bake this
-      into the message envelope's `payload` shape now so nothing downstream
-      has to retrofit it.
+- [x] `S` Repo scaffolding: `src/nexus_agent/{shared,bus,data,graph}` +
+      `tests/`. Coordinator/Vision/Analyst/Critic are stub *nodes* inside
+      `graph/nodes.py` rather than separate top-level packages for now —
+      there's no real per-agent logic yet to justify the split. Revisit the
+      package boundary in Phase 1 once each agent gets real implementation
+      (model calls, prompts) that warrants its own module.
+- [x] `M` LangGraph `StateGraph` skeleton (`graph/build.py`, `graph/state.py`)
+      with `PostgresSaver` checkpointing (`MemorySaver` swapped in only for
+      fast unit tests) — proves Art. IV §1 (inspectable run state) from day
+      one. Verified: `tests/test_graph_postgres.py` confirms a completed
+      run's full history is queryable from the checkpointer afterward.
+- [x] `M` `MessageEnvelope` pydantic model (`shared/schemas.py`) matching
+      Art. XII §4 exactly: `{run_id, task_id, from_agent, to_agent, payload,
+      confidence: float[0,1], trace_id, timestamp}`, `confidence` required
+      and bounded. Bus validation wired in `bus/client.py::MessageBus.publish`
+      — invalid messages raise `EnvelopeRejected` before `XADD`, never
+      reaching the stream (Art. III §3 enforcement).
+- [x] `S` Redis Streams bus (`bus/client.py`) — local docker-compose instance;
+      production topology remains a Phase 5 concern.
+- [x] `M` `SpatialData` container (`data/container.py`): binds image + mask +
+      `AnnData` under one CRS, plus `check_registration()` (<1 cell diameter,
+      15 µm threshold) marking a sample `unregistered` when it fails.
+- [x] `S` Object storage convention: MinIO (S3-compatible) service in
+      `docker-compose.yml` + connection settings in `shared/config.py` — no
+      client wrapper yet, first real consumer is Phase 3+. Postgres tables
+      for `provenance_log`/`correction_log` in `db/schema.sql`; `run_state`
+      itself is owned by LangGraph's `PostgresSaver.setup()`, not hand-rolled.
+- [x] `S` Versioning convention: `shared/versioning.py::stamp()` returns a
+      registered `{component, version}` pair, stamped into every stub node's
+      envelope payload.
 
 ### Exit criteria
 
-- A no-op task can flow: Coordinator → stub Vision → stub Analyst → stub
+- [x] A no-op task can flow: Coordinator → stub Vision → stub Analyst → stub
   Critic → done, with every hop logged as a schema-valid message and the
-  full run inspectable from the checkpointer afterward.
-- One real sample loads into the `SpatialData` container end-to-end with a
-  passing registration check.
+  full run inspectable from the checkpointer afterward. Also verified the
+  `veto` and `escalate` conditional-edge paths (`tests/test_graph_smoke.py`)
+  — veto correctly re-routes to the originating agent with the objection
+  appended to `payload`, rather than terminating.
+- [x] A synthetic sample loads into the `SpatialData` container end-to-end
+  with `check_registration()` correctly passing/failing on aligned vs.
+  offset coordinates (`tests/test_data_container.py`). Note: this used
+  synthetic data, not a real registered slide — the "one real sample"
+  version of this criterion is deferred to Phase 3 once real segmentation
+  output exists to register against.
+
+**Status: closed.** 19/19 tests passing (`pytest tests/`), Postgres/Redis/
+MinIO running via `docker compose up -d`, initial commits on `main`. Ready
+to start Phase 1.
 
 ---
 
