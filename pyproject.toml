@@ -16,6 +16,17 @@ dependencies = [
     "pydantic-settings>=2.3",
     "anndata>=0.10",
     "spatialdata>=0.2",
+    # Phase 3 (Art. XII §2-3): Vision/Analyst model stack. torch/torchvision
+    # are NOT listed here -- PyPI's default torch wheel bundles CUDA
+    # runtime libs (~800MB+) even on a CPU-only machine; install them first
+    # from the CPU-only wheel index (see environment.yml) so `pip install
+    # -e .` afterward finds them already satisfied instead of pulling the
+    # much larger default.
+    "cellpose>=4.0",
+    "scanpy>=1.10",
+    "squidpy>=1.6",
+    "s3fs",
+    "tifffile",
 ]
 
 [project.optional-dependencies]
@@ -29,5 +40,5 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: requires external services (Postgres/Redis) via docker compose",
+    "integration: requires external services (Postgres/Redis/MinIO via docker compose) and/or network access to fetch model weights or benchmark datasets",
 ]

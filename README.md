@@ -13,7 +13,7 @@ report.
   reference spec every implementation decision is bound by.
 - [ROADMAP.md](ROADMAP.md) — the phase-by-phase work plan derived from the
   Constitution, with implementation steps and exit criteria per phase.
-  **Current status: Phase 0 & 1 closed, Phase 2 next.**
+  **Current status: Phase 0–3 closed, Phase 4 next.**
 
 ## Architecture at a glance
 
@@ -28,7 +28,10 @@ this README only covers running what's built so far.
 ## Quickstart
 
 ```bash
-# 1. Create the conda environment (installs the project in editable mode)
+# 1. Create the conda environment (installs the project in editable mode,
+#    including the Phase 3 model stack -- torch/torchvision from the CPU
+#    wheel index, cellpose, scanpy, squidpy; ~2.5GB total including first-
+#    run model weight downloads)
 conda env create -f environment.yml
 conda activate nexus-agent
 
@@ -37,8 +40,12 @@ cp .env.example .env   # adjust if needed
 docker compose up -d
 
 # 3. Run the tests
-pytest tests/ -q                      # fast tests (no Docker required)
-pytest tests/test_graph_postgres.py   # integration test, needs Postgres up
+pytest tests/ -m "not integration" -q   # fast tests (no Docker, no model weights)
+pytest tests/ -m integration            # integration tests: Docker + real
+                                         # CellPose/VGG16 inference + a one-time
+                                         # ~27MB dataset fetch for the AJI
+                                         # benchmark (test_aji_benchmark.py
+                                         # alone takes ~15-20 min on CPU)
 ```
 
 ## Running a task
@@ -76,11 +83,18 @@ for message in result["history"]:
     print(f"{message.from_agent} -> {message.to_agent} (confidence={message.confidence}): {message.payload}")
 ```
 
-As of Phase 1, every agent's *contract* is real (schema-validated
-`MessageEnvelope`s, a Vision output matching Art. XII §2, Critic applying
-real confidence thresholds) but the actual model inference inside each
-agent — segmentation, fusion, cell typing — is still a stub; that lands in
-Phase 3 onward per [ROADMAP.md](ROADMAP.md).
+Every agent's contract is real (schema-validated `MessageEnvelope`s, a
+Vision output matching Art. XII §2, Critic applying real confidence
+thresholds), and as of Phase 3, Vision/Analyst run *real* model inference
+too -- but only if you point the state at real data. Add `image_uri`/
+`expression_uri` (object-store references, uploaded via
+`nexus_agent.data.object_store.put_array`/`put_anndata`) to `initial_state`
+and Vision will actually segment with CellPose and embed with VGG16, and
+Analyst will actually fuse via the graph transformer, instead of emitting
+the single-synthetic-cell stub shown above. See
+[tests/test_graph_real_pipeline.py](tests/test_graph_real_pipeline.py) for
+a complete example. Real cell typing/domain assignment itself is still a
+placeholder either way -- see [ROADMAP.md](ROADMAP.md)'s Phase 3 notes.
 
 ## Repo layout
 
@@ -88,8 +102,11 @@ Phase 3 onward per [ROADMAP.md](ROADMAP.md).
 src/nexus_agent/
 ├── shared/     # MessageEnvelope + AnalyticalGoal schemas, versioning, env config
 ├── bus/        # Redis Streams client — validates before publishing
-├── data/       # SpatialData container + cross-modal registration check
+├── data/       # SpatialData container, S3 object store client, provenance writer
 ├── agents/     # Coordinator, Vision, Analyst, Critic — contracts + node logic
+├── vision/     # CellPose segmentation, VGG16/DINOv2 embedding (Art. XII §2)
+├── analyst/    # Scanpy/Squidpy ingestion, graph-transformer fusion (Art. XII §3)
+├── benchmark/  # Segmentation AJI metric + DSB2018 demo benchmark harness
 └── graph/      # LangGraph StateGraph assembly and routing
 tests/          # pytest; integration tests marked `@pytest.mark.integration`
 db/schema.sql   # provenance_log / correction_log tables (Postgres init script)
@@ -98,9 +115,15 @@ docker-compose.yml  # Postgres, Redis, MinIO for local development
 
 ## Status
 
-Phase 0 (foundations & scaffolding) and Phase 1 (agent architecture) are
-complete: a working agent graph — Postgres-backed checkpointing, a
-validated message bus, a data container with a registration-error check,
-and real per-agent contracts/routing logic (Coordinator's subtask
-planning, Critic's confidence-threshold verdicts) — with actual model
-inference still stubbed out pending the phases in [ROADMAP.md](ROADMAP.md).
+Phases 0-3 are complete: a working agent graph — Postgres-backed
+checkpointing, a validated message bus, real per-agent contracts and
+procedural logic (Coordinator's subtask planning, Critic's confidence
+thresholds with a real re-route trigger), and a real (if CPU-scoped —
+VGG16 default, StarDist deferred; see [ROADMAP.md](ROADMAP.md)'s Phase 3
+scope notes) Vision/Analyst model stack: CellPose segmentation, VGG16/
+DINOv2 embedding, Scanpy/Squidpy ingestion, and a graph-transformer fusion
+module producing 128-dim per-cell representations with provenance intact.
+A real AJI benchmark (0.791 mean, DSB2018 demo data) proves the validation
+harness, though full Art. VIII multi-platform coverage remains open. Real
+cell typing/domain assignment and explainability (Art. VI) land in
+Phase 4+ per [ROADMAP.md](ROADMAP.md).

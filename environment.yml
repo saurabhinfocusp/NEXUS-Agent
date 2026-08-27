@@ -5,4 +5,17 @@ dependencies:
   - python=3.12
   - pip
   - pip:
+      # Install CPU-only torch/torchvision FIRST, from PyTorch's own CPU
+      # wheel index -- PyPI's default torch wheel bundles CUDA runtime libs
+      # (~800MB+) even with no GPU present. Installing it before the
+      # editable project install means cellpose (a transitive torch user)
+      # finds it already satisfied instead of pulling the CUDA-bundled
+      # default. `pip:` entries here run as ONE pip invocation, and pip
+      # processes `--extra-index-url` before resolving the packages listed
+      # after it, so this ordering is honored in a single environment
+      # creation -- if it isn't in your pip version, run the two `pip
+      # install` commands below manually instead.
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      - torch
+      - torchvision
       - -e .[dev]

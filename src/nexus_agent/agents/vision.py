@@ -1,9 +1,11 @@
 """Vision Specialist Agent (Constitution Art. III §1, Art. XII §2).
 
 Owns all image-derived evidence: segmentation, morphological feature
-extraction, and image encoding. The real model stack (CellPose/StarDist,
-DINOv2/VGG16) is Phase 3 work; this stub emits one synthetic
-VisionCellRecord so the output *contract* is real ahead of the model.
+extraction, and image encoding. When `state["image_uri"]` is set, this runs
+the real Phase 3 model stack (CellPose segmentation + VGG16/DINOv2
+embedding, `vision/segmentation.py` + `vision/embedding.py`); otherwise it
+falls back to the Phase 0/1 single-synthetic-cell stub, so fast/unit tests
+stay Docker- and model-free.
 """
 
 from __future__ import annotations
@@ -14,8 +16,7 @@ from nexus_agent.agents.common import build_envelope, resolve_stub_confidence
 from nexus_agent.graph.state import RunState
 from nexus_agent.shared.schemas import AgentName
 from nexus_agent.shared.versioning import stamp
-
-EMBEDDING_DIM = 1024
+from nexus_agent.vision.embedding import EMBEDDING_DIM
 
 
 class VisionCellRecord(BaseModel):
@@ -29,9 +30,9 @@ class VisionCellRecord(BaseModel):
 
 
 def _stub_cell_record() -> VisionCellRecord:
-    """One synthetic cell -- stands in for real segmentation/encoding output
-    (Phase 3) so downstream nodes and tests have something contract-valid
-    to consume.
+    """One synthetic cell -- used when no real image is provided, so
+    downstream nodes and fast tests have something contract-valid to
+    consume without paying for segmentation/embedding.
     """
     return VisionCellRecord(
         cell_id="stub-cell-0",
@@ -42,12 +43,50 @@ def _stub_cell_record() -> VisionCellRecord:
     )
 
 
+def _segment_and_embed(image_uri: str) -> tuple[list[VisionCellRecord], float, list[str]]:
+    """Real Phase 3 path: fetch the image from object storage, segment with
+    CellPose, embed each cell crop (VGG16 default -- see ROADMAP.md's
+    Phase 3 scope notes for why), and build real VisionCellRecords.
+    """
+    from nexus_agent.data.object_store import get_array
+    from nexus_agent.vision.embedding import Vgg16Embedder
+    from nexus_agent.vision.segmentation import cells_from_mask, crop_patch, segment_cells
+
+    image = get_array(image_uri)
+    label_mask = segment_cells(image)
+    cell_infos = cells_from_mask(label_mask)
+
+    embedder = Vgg16Embedder()
+    records = [
+        VisionCellRecord(
+            cell_id=info["cell_id"],
+            centroid_xy=info["centroid_xy"],
+            mask_polygon=info["mask_polygon"],
+            embedding_vector=embedder.embed_patch(crop_patch(image, info["bbox"])).tolist(),
+            embedding_model_version=embedder.model_version,
+        )
+        for info in cell_infos
+    ]
+
+    if records:
+        confidence = 0.8
+        reasoning = [f"CellPose segmented {len(records)} cell(s) from {image_uri}", f"embedded via {embedder.model_version}"]
+    else:
+        confidence = 0.05
+        reasoning = [f"CellPose found no cells in {image_uri}"]
+
+    return records, confidence, reasoning
+
+
 def vision_node(state: RunState) -> dict:
     to_agent = AgentName.ANALYST if AgentName.ANALYST in state["subtask_plan"] else AgentName.CRITIC
-    cells = [_stub_cell_record()]
-    confidence, reasoning = resolve_stub_confidence(
-        state, AgentName.VISION, default=0.5, retry_confidence=0.6
-    )
+    image_uri = state.get("image_uri")
+
+    if image_uri:
+        cells, confidence, reasoning = _segment_and_embed(image_uri)
+    else:
+        cells = [_stub_cell_record()]
+        confidence, reasoning = resolve_stub_confidence(state, AgentName.VISION, default=0.5, retry_confidence=0.6)
 
     envelope = build_envelope(
         state,

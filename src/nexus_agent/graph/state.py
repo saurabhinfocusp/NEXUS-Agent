@@ -20,6 +20,13 @@ class RunState(TypedDict, total=False):
     trace_id: UUID
     goal: AnalyticalGoal
     subtask_plan: list[AgentName]
+    # Object-store references (Art. XII §8), not inline arrays -- keeps
+    # large binary data out of the Postgres checkpoint rows. Set to route
+    # Vision/Analyst through their real model stacks (Phase 3); when unset,
+    # they fall back to the lightweight synthetic-cell stub from Phase 0/1
+    # so fast/unit tests stay Docker- and model-free.
+    image_uri: str | None
+    expression_uri: str | None
     history: Annotated[list[MessageEnvelope], operator.add]
     verdict: Verdict | None
     # Test-only hook: lets a test force Critic's stub verdict to exercise the

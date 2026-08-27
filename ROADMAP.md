@@ -1,6 +1,6 @@
 # NEXUS-Agent Work Plan
 
-**Status:** Phase 0 & 1 closed, Phase 2 next — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
+**Status:** Phase 0–3 closed, Phase 4 next — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
 **Team assumption:** small (1–3 generalists), work is mostly sequential with
 parallelization called out where it pays off once foundations exist.
 **Sizing:** relative effort per task — `S` (days), `M` (~1–2 weeks solo),
@@ -164,29 +164,32 @@ import for LangGraph's schema introspection). Ready to start Phase 2.
 
 ### Steps
 
-- [ ] `S` Confirm full run history (inputs, intermediate outputs, decisions)
-      is queryable from the Postgres checkpointer, not just the final
-      result — this was scaffolded in Phase 0; here it gets tested against
-      a multi-step real run, including after a veto/re-route cycle.
-- [ ] `M` Add a structured reasoning trace to each agent's non-trivial
-      decisions (Chain-of-Thought or equivalent) and persist it as a
-      retained artifact (Art. IV §2) — not just logged for debugging, but
-      stored where Phase 4's auditability requirements can retrieve it.
-- [ ] `M` Exercise and harden the re-route path end to end: inject a
-      deliberately failing/implausible intermediate result and confirm
-      Critic catches it, re-routes with feedback, and the originating agent
-      can act on that feedback (not just receive it).
-- [ ] `S` Escalation stub: when Critic can't resolve via re-routing, task
-      lands in a human-review queue (full review *interface* is Phase 5;
-      here, just prove the escalate edge terminates somewhere real, not a
-      dead end).
+- [x] `S` Full run history reconstructable from the Postgres checkpointer at
+      an intermediate point, not just before/after — tested strictly
+      between a veto and its retry
+      (`tests/test_graph_postgres.py::test_run_history_is_reconstructable_at_a_point_strictly_between_veto_and_retry`).
+- [x] `M` Structured `reasoning` field added to Coordinator's and Critic's
+      payloads (`agents/coordinator.py`, `agents/critic.py`), persisted as
+      part of the already-checkpointed `MessageEnvelope` (Art. IV §2).
+- [x] `M` Re-route path hardened with a *real* trigger: `stub_confidence_override`
+      (`graph/state.py`) lets a test make Vision/Analyst's first attempt
+      genuinely low-confidence, so Critic's actual threshold logic (not the
+      `force_verdict` hook) triggers the veto. `is_retry_after_veto`
+      (`agents/common.py`) lets the re-routed agent detect it's retrying and
+      report higher confidence -- acting on the objection, not just
+      receiving it (`tests/test_error_recovery.py`).
+- [x] `S` Escalation path terminates at `human_review` node, not a dead end
+      — carried over from Phase 0/1, re-verified alongside the above.
 
 ### Exit criteria
 
-- A task history is fully reconstructable from the checkpointer at any
+- [x] A task history is fully reconstructable from the checkpointer at any
   intermediate point, including after a veto/re-route.
-- At least one integration test forces a bad intermediate result and
-  verifies it never reaches the report un-flagged.
+- [x] At least one integration test forces a bad intermediate result and
+  verifies it never reaches the report un-flagged
+  (`tests/test_error_recovery.py::test_genuinely_low_confidence_triggers_real_veto_and_never_reaches_report_unflagged`).
+
+**Status: closed.**
 
 ---
 
@@ -197,39 +200,63 @@ Article VIII (cross-platform validation).
 
 ### Steps
 
-- [ ] `L` Vision model stack (Art. XII §2): CellPose (`cyto3`) segmentation
-      as default, StarDist fallback for densely packed nuclei (H&E, IMC).
-      DINOv2 ViT-L/14 for per-cell morphology embeddings (1024-dim), VGG16
-      `conv5_3` as the lighter-weight fallback path.
-- [ ] `M` Ingestion via Scanpy (total-count normalization, `log1p`) and
-      Squidpy (spatial k-NN graph, k = 6–15, platform-dependent) — "standard,
-      auditable tooling," per Art. V §3, not bespoke preprocessing.
-- [ ] `L` xSiGra graph transformer fusion: nodes = cells, node features =
-      `concat(morphology_embedding, expression_pca[50])`, edges = spatial
-      k-NN graph, 2 transformer layers, 4 attention heads, 128-dim fused
-      output (Art. XII §3).
-- [ ] `M` Provenance pointers: every fused representation retains a pointer
-      back to its source image region and source expression profile
-      (Art. V §2) — this is what makes Phase 4's attribution traceable, so
-      don't defer it.
-- [ ] `S` Single-modality guardrail: cell-typing/domain-assignment logic
-      must only consume the fused representation. Any code path that would
-      compute a claim from one modality alone must tag it
-      `claims[].provisional = true` (Art. V §1, Art. XII §3) — make this
-      structurally hard to skip, e.g. the typing function simply doesn't
-      accept an unfused input type.
-- [ ] `M` Begin Art. VIII validation tracking here (it's threaded through
-      Phases 3–5, not a separate phase): stand up the benchmark harness and
-      start recording Segmentation AJI on at least one platform, so the
-      ≥0.60 threshold (Art. XII §7) has a number attached before Phase 4
-      claims completeness.
+- [x] `L` Vision model stack (`vision/segmentation.py`, `vision/embedding.py`):
+      CellPose segmentation as default; DINOv2 ViT-L/14 wired but not the
+      default (weight download is lazy/opt-in), VGG16 `conv5_3` is the
+      *default* embedder on this CPU-only box, zero-padded 512→1024 to
+      satisfy the fixed Art. XII §2 contract. **Scope reduction:** StarDist
+      is deferred, not installed (TensorFlow-based; not worth the
+      disk/dependency weight for a fallback path this phase's dataset
+      doesn't exercise) — `stardist_segment()` raises `NotImplementedError`
+      pointing here. **Disclosure:** CellPose 4.x itself deprecated the
+      separate `cyto3` checkpoint in favor of one unified "Cellpose-SAM"
+      model; `model_type="cyto3"` is accepted for spec-compatibility but
+      resolves to that same unified (~1.15GB) checkpoint, not a
+      standalone cyto3-specific one — noted in `segment_cells()`'s
+      docstring rather than silently implied otherwise.
+- [x] `M` Ingestion via Scanpy (total-count normalization, `log1p`) and
+      Squidpy (spatial k-NN graph, k = 6–15, auto-capped for small inputs)
+      in `analyst/ingestion.py`.
+- [x] `L` Fusion transformer (`analyst/fusion.py`): node features =
+      `concat(morphology_embedding[1024], expression_pca[50])`, spatial
+      k-NN edges, 2 transformer layers, 4 attention heads, 128-dim fused
+      output (Art. XII §3). **Scope reduction:** hand-rolled PyTorch
+      (`nn.TransformerEncoder` with attention masked to the k-NN adjacency)
+      instead of `torch_geometric` — see module docstring. Weights are
+      randomly initialized (no training data/checkpoint exists yet): this
+      proves the architecture is implemented correctly, not that fusion
+      *quality* has been validated.
+- [x] `M` Provenance pointers (`source_image_region`,
+      `source_expression_profile` on every `FusedCellRecord`) written into
+      the `provenance_log` table via `data/provenance.py`.
+- [x] `S` Single-modality guardrail: `analyst_node` only sets
+      `provisional=False` when Vision actually ran and fusion actually
+      happened; single-modality claims are `provisional=True`
+      (`tests/test_graph_real_pipeline.py::test_expression_only_stays_provisional`).
+- [x] `M` Art. VIII validation tracking begun: `benchmark/aji.py` measures
+      AJI against real CellPose predictions on StarDist's hosted DSB2018
+      demo subset (fluorescence nuclei microscopy, no login). **Measured
+      result** (3 images, 2026-08-27): mean AJI = **0.791** (0.726, 0.718,
+      0.927) — comfortably above the Art. XII §7 ≥0.60 threshold. This is
+      one real number on one platform, not Art. VIII §1's required
+      multi-platform coverage (H&E, mIF, IMC, Visium/MERFISH) — DSB2018 is
+      none of those. Full cross-platform validation remains open work for
+      Phases 4-5.
 
 ### Exit criteria
 
-- End-to-end: raw image + expression data in → fused 128-dim per-cell
-  representation out, with provenance intact and single-modality claims
-  correctly flagged provisional.
-- First AJI measurement recorded on at least one validated platform.
+- [x] End-to-end: raw image + expression data in (via `image_uri`/
+  `expression_uri`, object-store references per Art. XII §8, not inline
+  arrays) → fused 128-dim per-cell representation out, with provenance
+  intact and single-modality claims correctly flagged provisional
+  (`tests/test_graph_real_pipeline.py`).
+- [x] First AJI measurement recorded (0.791 mean, DSB2018 demo subset) —
+  real and honestly measured, but on a platform outside Art. VIII §1's
+  four named ones; not yet "on a validated platform" in the full sense.
+
+**Status: closed**, with the two scope reductions and the partial (not
+full Art. VIII) validation coverage noted above carried forward as open
+items for later phases rather than silently resolved.
 
 ---
 
@@ -319,10 +346,19 @@ ongoing checklist rather than a milestone to "finish":
 
 - [ ] Benchmark harness covers all four required platform types: H&E
       histology, Multiplex-IF, IMC, spot/molecular-resolution (Visium/MERFISH)
-      (Art. VIII §1).
+      (Art. VIII §1). **Not started** — Phase 3's `benchmark/aji.py` proves
+      the harness mechanics on DSB2018 (fluorescence nuclei demo data),
+      which is none of the four required types; a real platform-labeled
+      dataset is still needed for each.
+- [x] Segmentation AJI metric implementation exists and is measured for
+      real (`aggregated_jaccard_index`, unit-tested against known
+      pass/fail/partial-overlap cases; 0.791 mean on DSB2018, 3 images,
+      2026-08-27) — the *metric* is validated even though platform
+      coverage isn't yet.
 - [ ] Per-platform, per-capability metrics tracked against Art. XII §7
       thresholds (AJI ≥0.60, cell-typing Macro-F1 ≥0.80, domain ARI ≥0.70,
-      cross-platform max drop ≤10 pts).
+      cross-platform max drop ≤10 pts) — only the AJI row has a real (if
+      single-platform, non-required-type) number so far.
 - [ ] Degradation across platforms/batches is disclosed in validation
       reporting, not smoothed over by selective benchmarking (Art. VIII §2).
 - [ ] When a design choice trades platform-specific accuracy for
@@ -340,15 +376,19 @@ satisfied simultaneously, not per-platform cherry-picking.
 These aren't blocking a start, but resolve them early — they shape several
 phases at once:
 
-1. **Compute target for Phase 0–3**: Art. XII §8 assumes Kubernetes with a
-   GPU pool; confirm whether that's available now or if early phases should
-   develop against a single-GPU dev box with K8s deferred to Phase 5's infra
-   hardening.
+1. **Resolved (2026-08-27):** dev compute is CPU-only, no GPU. Art. XII §8's
+   Kubernetes+GPU-pool target remains the eventual production goal; Phase 3
+   defaulted to VGG16 over DINOv2 and skipped StarDist (TensorFlow) as a
+   direct consequence — see Phase 3's scope-reduction notes above. Revisit
+   defaults once real GPU compute is available.
 2. **Literature corpus source** for the Phase 4 RAG layer — licensing and
-   ingestion scope affects sizing of that task significantly.
-3. **First validation platform** for Phase 3's initial AJI measurement —
-   picking the platform with the most accessible annotated reference data
-   first will unblock Article VIII tracking soonest.
+   ingestion scope affects sizing of that task significantly. Still open.
+3. **Partially resolved:** Phase 3's AJI harness is proven against DSB2018
+   (fluorescence nuclei demo data, no login required) — 0.791 mean AJI,
+   3 images. This is NOT one of Art. VIII §1's four required platform types
+   (H&E, Multiplex-IF, IMC, Visium/MERFISH); picking and sourcing the first
+   *required-type* labeled dataset is still open and needed before the
+   cross-cutting Art. VIII checklist's first row can be checked off.
 
 ---
 

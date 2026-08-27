@@ -17,8 +17,10 @@ venv/
 # Env vars / secrets
 .env
 
-# Data & model artifacts (large, not version-controlled)
-data/
+# Data & model artifacts (large, not version-controlled).
+# Anchored to repo root -- an unanchored `data/` also matches
+# src/nexus_agent/data/ (a real source subpackage) at any depth.
+/data/
 *.h5ad
 *.zarr/
 *.ome.tiff
