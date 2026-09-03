@@ -27,11 +27,21 @@ dependencies = [
     "squidpy>=1.6",
     "s3fs",
     "tifffile",
+    # Phase 4 (Art. XII §5): Critic/XAI attribution stack.
+    "shap>=0.45",
+    "sentence-transformers>=3.0",
+    "scikit-learn>=1.4",
+    "pgvector>=0.3",
+    # Phase 5 (Art. XII §6): PEFT/LoRA fine-tuning loop; Phase 5 reviewer API.
+    "peft>=0.11",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "httpx>=0.27",
 ]
 
 [tool.setuptools.packages.find]

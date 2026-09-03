@@ -96,6 +96,24 @@ def put_anndata(key: str, adata: ad.AnnData, *, bucket: str | None = None) -> st
     return _path_to_uri(path)
 
 
+def put_bytes(key: str, data: bytes, *, bucket: str | None = None) -> str:
+    """Write raw `data` under `bucket/key`, returning its s3:// URI. Used by
+    Phase 5's LoRA fine-tune loop (`learning/lora_finetune.py`) to persist
+    `torch.save`-serialized checkpoints (adapter + classifier state).
+    """
+    bucket = bucket or settings.s3_bucket
+    ensure_bucket(bucket)
+    path = f"{bucket}/{key}"
+    with _fs().open(path, "wb") as f:
+        f.write(data)
+    return _path_to_uri(path)
+
+
+def get_bytes(uri: str) -> bytes:
+    with _fs().open(_uri_to_path(uri), "rb") as f:
+        return f.read()
+
+
 def get_anndata(uri: str) -> ad.AnnData:
     with _fs().open(_uri_to_path(uri), "rb") as f:
         data = f.read()

@@ -26,14 +26,22 @@ def record_provenance(
     source_expression_profile: dict[str, Any] | None,
     component: str,
     component_version: str,
+    fused_embedding: list[float] | None = None,
 ) -> None:
+    """`fused_embedding` (Art. XII §6) is the 128-dim fused representation at
+    claim time, so Phase 5's LoRA fine-tune loop can recover
+    `(cell_id -> fused_embedding)` training pairs from a later correction
+    without a second object-store round trip. Nullable/optional -- only
+    real (non-stub) fused claims populate it.
+    """
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(
             """
             INSERT INTO provenance_log
                 (run_id, task_id, claim_id, source_image_region,
-                 source_expression_profile, component, component_version)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                 source_expression_profile, component, component_version,
+                 fused_embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 run_id,
@@ -43,6 +51,7 @@ def record_provenance(
                 json.dumps(source_expression_profile) if source_expression_profile is not None else None,
                 component,
                 component_version,
+                json.dumps(fused_embedding) if fused_embedding is not None else None,
             ),
         )
 

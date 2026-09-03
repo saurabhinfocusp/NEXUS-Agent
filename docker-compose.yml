@@ -1,6 +1,9 @@
 services:
   postgres:
-    image: postgres:16
+    # pgvector/pgvector:pg16 is a drop-in-compatible postgres:16 image with
+    # the `vector` extension preinstalled (Art. XII §5's RAG literature
+    # index -- see db/schema.sql's `CREATE EXTENSION IF NOT EXISTS vector`).
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-nexus_agent}

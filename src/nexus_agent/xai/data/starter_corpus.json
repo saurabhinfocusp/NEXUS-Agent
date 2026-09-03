@@ -1,0 +1,142 @@
+[
+  {
+    "text": "CD3 is a T-cell co-receptor complex expressed on the surface of all mature T lymphocytes and is the canonical pan-T-cell marker used in immunophenotyping.",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "CD4 marks the helper T-cell subset, which recognizes antigen presented on MHC class II and coordinates the activity of other immune cells.",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "CD8 marks the cytotoxic T-cell subset, which recognizes antigen presented on MHC class I and directly kills infected or malignant cells.",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "CD19 and CD20 are B-lymphocyte surface markers used to identify the B-cell lineage; CD20 is retained from the pre-B stage through most of B-cell maturation.",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "CD68 is a cytoplasmic glycoprotein widely used as a marker of macrophages and other cells of monocytic lineage in tissue sections.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "CD14 is a surface marker of monocytes and macrophages that functions as a co-receptor for bacterial lipopolysaccharide detection.",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "EPCAM (epithelial cell adhesion molecule) is broadly expressed on epithelial cells and is commonly used as a marker to distinguish epithelial tumor cells from surrounding stroma.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "Vimentin (VIM) is an intermediate filament protein characteristic of mesenchymal cells, including fibroblasts and other stromal cell types.",
+    "citation": "Alberts et al., Molecular Biology of the Cell, 7th ed."
+  },
+  {
+    "text": "PECAM1, also known as CD31, is expressed on vascular endothelial cells and is a standard marker for identifying blood vessels in tissue sections.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "PTPRC, also known as CD45, is the pan-leukocyte marker expressed on nearly all cells of hematopoietic origin except mature erythrocytes and platelets.",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "Cytokeratins (encoded by KRT genes) are intermediate filament proteins that form the cytoskeleton of epithelial cells and are used diagnostically to confirm epithelial differentiation.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "ACTA2 encodes alpha smooth muscle actin, a marker of smooth muscle cells and myofibroblasts, including activated stromal fibroblasts in fibrotic and tumor tissue.",
+    "citation": "Alberts et al., Molecular Biology of the Cell, 7th ed."
+  },
+  {
+    "text": "PDGFRB (platelet-derived growth factor receptor beta) is expressed on pericytes, the mural cells that wrap microvascular endothelium and support vessel stability.",
+    "citation": "Alberts et al., Molecular Biology of the Cell, 7th ed."
+  },
+  {
+    "text": "MKI67 encodes the Ki-67 protein, a nuclear antigen present during all active phases of the cell cycle and absent in quiescent cells, making it a standard proliferation marker.",
+    "citation": "Alberts et al., Molecular Biology of the Cell, 7th ed."
+  },
+  {
+    "text": "CA9 (carbonic anhydrase IX) is transcriptionally induced under hypoxia and is commonly used as an immunohistochemical marker of hypoxic tumor regions.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "HIF1A encodes hypoxia-inducible factor 1-alpha, the master transcriptional regulator of the cellular response to low oxygen tension.",
+    "citation": "Alberts et al., Molecular Biology of the Cell, 7th ed."
+  },
+  {
+    "text": "TP53 is a tumor suppressor gene whose protein product, p53, arrests the cell cycle or triggers apoptosis in response to DNA damage; it is among the most frequently mutated genes in human cancers.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "The tumor microenvironment comprises the malignant cells together with the surrounding stroma, immune infiltrate, vasculature, and extracellular matrix, all of which influence tumor progression.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "The stromal compartment of a tumor consists of non-malignant supporting cells, including fibroblasts, endothelial cells, and immune cells embedded in extracellular matrix.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "Immune infiltrate refers to the population of leukocytes, including T cells, B cells, and macrophages, that has migrated into tumor or inflamed tissue and can be quantified spatially.",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "Tertiary lymphoid structures are organized aggregates of lymphocytes that form ectopically in chronically inflamed or tumor tissue and resemble the architecture of secondary lymphoid organs.",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "The tumor-stroma interface is the spatial boundary region where malignant epithelial cells directly abut the surrounding stromal compartment, often a site of active invasion signaling.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "A necrotic core forms when cells at the center of a rapidly growing tumor outstrip their oxygen and nutrient supply and undergo ischemic cell death.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "The perivascular niche is the tissue microenvironment immediately surrounding blood vessels, where pericytes, endothelial cells, and resident stem or progenitor cells interact closely.",
+    "citation": "Alberts et al., Molecular Biology of the Cell, 7th ed."
+  },
+  {
+    "text": "Epithelial-mesenchymal transition is a cellular program in which epithelial cells lose polarity and cell-cell adhesion and acquire migratory, mesenchymal-like properties, contributing to invasion and metastasis.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "Batch effects across spatial-omics platforms arise from differences in tissue processing, staining chemistry, and imaging hardware, and must be corrected before combining data from different runs or platforms.",
+    "citation": "Lun et al., Orchestrating Single-Cell Analysis with Bioconductor."
+  },
+  {
+    "text": "Segmentation accuracy in spatial-omics imaging measures how faithfully computationally delineated cell or nucleus boundaries match ground-truth annotations, and directly bounds the reliability of downstream per-cell quantification.",
+    "citation": "Lun et al., Orchestrating Single-Cell Analysis with Bioconductor."
+  },
+  {
+    "text": "Multiplex imaging technologies capture dozens of protein or RNA markers simultaneously in a single tissue section, enabling high-dimensional spatial phenotyping that traditional single-marker immunohistochemistry cannot achieve.",
+    "citation": "Lun et al., Orchestrating Single-Cell Analysis with Bioconductor."
+  },
+  {
+    "text": "In hematoxylin and eosin (H&E) staining, hematoxylin binds acidic structures such as nuclear chromatin (staining them blue-purple) while eosin stains cytoplasmic and extracellular proteins pink.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "Dendritic cells are professional antigen-presenting cells that capture antigen in peripheral tissue and migrate to lymph nodes to prime naive T cells.",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "Natural killer cells are innate lymphocytes that kill virally infected or stressed cells without prior antigen sensitization, commonly identified by markers such as NCAM1 (CD56).",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "Regulatory T cells, marked by the transcription factor FOXP3, suppress excessive immune responses and maintain peripheral tolerance.",
+    "citation": "Abbas et al., Cellular and Molecular Immunology, 10th ed."
+  },
+  {
+    "text": "Angiogenesis, the formation of new blood vessels from existing vasculature, is a hallmark of tumor growth that supplies expanding tissue with oxygen and nutrients.",
+    "citation": "Kumar et al., Robbins Basic Pathology, 10th ed."
+  },
+  {
+    "text": "Extracellular matrix remodeling by matrix metalloproteinases facilitates tumor cell invasion through the basement membrane and surrounding stroma.",
+    "citation": "Alberts et al., Molecular Biology of the Cell, 7th ed."
+  },
+  {
+    "text": "Spatial transcriptomics platforms such as Visium and MERFISH measure gene expression while preserving the tissue coordinates of each measurement, enabling analysis of gene expression in its native spatial context.",
+    "citation": "Lun et al., Orchestrating Single-Cell Analysis with Bioconductor."
+  }
+]

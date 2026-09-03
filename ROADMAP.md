@@ -1,6 +1,6 @@
 # NEXUS-Agent Work Plan
 
-**Status:** Phase 0–3 closed, Phase 4 next — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
+**Status:** Phase 0–5 implemented (see per-phase status notes below) — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
 **Team assumption:** small (1–3 generalists), work is mostly sequential with
 parallelization called out where it pays off once foundations exist.
 **Sizing:** relative effort per task — `S` (days), `M` (~1–2 weeks solo),
@@ -266,37 +266,84 @@ items for later phases rather than silently resolved.
 
 ### Steps
 
-- [ ] `M` Grad-CAM++ hooked at the vision backbone's final conv block (or
-      attention rollout if the backbone is a ViT), upsampled to source-tile
-      resolution via bilinear interpolation.
-- [ ] `M` SHAP via `KernelExplainer` over the fusion layer's output
-      (model-agnostic — the graph transformer isn't tree-based), 100
-      randomly sampled background cells per tissue sample, top 15 genes
-      retained per claim.
-- [ ] `L` RAG literature layer: biomedical sentence-embedding model over the
-      literature corpus into a vector index (`pgvector` or equivalent),
-      top-k = 5 retrieval, cosine similarity ≥ 0.75 to qualify as a
-      citation. Below threshold, the claim is flagged "no supporting
-      literature retrieved" (Art. VI §1.3) — never silently uncited.
-- [ ] `S` Confidence-weighted report rendering: a low-confidence finding
-      cannot share the same visual/textual weight as a high-confidence one
-      (Art. VI §2) — this is a report-template constraint, enforce it in
-      the rendering layer, not by author discipline.
-- [ ] `M` Auditability: store heatmaps, importance scores, citations, and
-      confidence as first-class outputs retrievable independently of the
-      narrative text (Art. VI §3) — verify by pulling a claim's full
-      evidence bundle without touching the report generator.
-- [ ] `S` Wire the "Explainability coverage" metric from Art. XII §7:
-      measure (not sample) the share of surfaced claims carrying full
-      Art. VI §1 artifacts — this needs to hit 100% before anything is
-      called production-ready.
+- [x] `M` Grad-CAM++ hooked at the vision backbone's final conv block
+      (`xai/gradcam.py::grad_cam_plusplus`, hooked at `Vgg16Embedder`'s
+      conv5_3 — the CPU-only *default* embedder, Phase 3), upsampled to
+      source-tile resolution via bilinear interpolation. Wired live into
+      `agents/critic.py` for every claim with real Vision evidence.
+      **Attention rollout (the ViT/DINOv2 path) is wired but not
+      functional**: `xai/gradcam.py::attention_rollout` correctly raises a
+      disclosed `RuntimeError` against the real `facebookresearch/dinov2`
+      hub checkpoint, because that model's `Attention.forward` calls the
+      fused `scaled_dot_product_attention` kernel directly and never
+      materializes a separate post-softmax attention tensor to hook — there
+      is nothing to roll out. Making this real would require monkey-patching
+      DINOv2's attention forward pass to compute softmax eagerly; not done
+      here. Since DINOv2 isn't the default embedder anyway (Phase 3), this
+      doesn't block the default path, but it means the ViT branch of this
+      bullet is honestly incomplete, not "done."
+- [x] `M` SHAP via `KernelExplainer` over the fusion layer's output
+      (`xai/shap_explain.py::shap_gene_importance`), 100 randomly sampled
+      background cells per tissue sample (capped to all available cells
+      when fewer), top 15 genes retained per claim. Wired live into
+      `agents/critic.py`, gated on a Phase 5 promoted classifier existing
+      (there's no real decision to explain before that).
+- [x] `L` RAG literature layer (`xai/literature_rag.py`): default
+      `HashingLiteratureEmbedder` (deterministic `sklearn.HashingVectorizer`,
+      disclosed as a keyword-overlap stand-in, not real biomedical
+      semantics) plus the named-spec `BioSentenceTransformerEmbedder`
+      (`pritamdeka/S-PubMedBert-MS-MARCO`, lazy weight download, not
+      default). Vector index is real `pgvector` (`literature_chunks`,
+      `docker-compose.yml` now runs `pgvector/pgvector:pg16`), top-k = 5,
+      cosine similarity ≥ 0.75 to qualify. Below threshold — or the corpus
+      has nothing relevant — the claim is flagged
+      `no_supporting_literature_retrieved` (Art. VI §1.3), never silently
+      uncited. **Corpus is a small (35-entry) hand-authored starter set**
+      (`xai/data/starter_corpus.json`) proving the mechanics end-to-end, not
+      a real literature database — the "literature corpus source" open
+      question below remains genuinely open.
+- [x] `S` Confidence-weighted report rendering (`report/build.py`):
+      `HIGH_CONFIDENCE_THRESHOLD`/`MEDIUM_CONFIDENCE_THRESHOLD` (new
+      engineering values, same disclosure style as `critic.py`'s
+      thresholds) drive a `weight_tier` whose visual weight (font-size,
+      opacity, font-weight) is baked into `render_report_html`'s own
+      per-tier styling, not exposed as a caller-settable parameter — a
+      low-confidence entry structurally cannot render at the same weight as
+      a high-confidence one (test-asserted, not just eyeballed).
+- [x] `M` Auditability (`xai/claims_evidence.py`): heatmaps go to object
+      storage, importance scores/citations/confidence/coverage flags go to
+      the new `xai_evidence` table, all retrievable via
+      `fetch_evidence_bundle(dsn, run_id, claim_id)` independent of report
+      generation — verified end-to-end (real Postgres+pgvector, real
+      pipeline run) that a claim's full evidence bundle is fetchable without
+      touching `report/build.py` at all.
+- [x] `S` Explainability coverage metric (`xai/coverage.py::
+      explainability_coverage`) measures (queries `xai_evidence`, doesn't
+      sample) the share of claims whose `artifacts_present` covers their
+      `artifacts_expected`. Measured **1.0 on a real end-to-end run**
+      (image+expression pipeline, real Grad-CAM++ heatmap + real RAG
+      citation-or-flag; SHAP wasn't in `artifacts_expected` yet on that run
+      since no checkpoint had been promoted, so it correctly wasn't counted
+      against coverage).
 
 ### Exit criteria
 
-- Every claim type (cell-type call, spatial-domain definition, biomarker
-  association) in a sample report carries all applicable artifacts from
-  Art. VI §1, with confidence visibly differentiated.
-- Explainability coverage metric reads 100% on at least one full run.
+- [x] Every claim type in a sample report carries all applicable artifacts
+  from Art. VI §1, with confidence visibly differentiated — verified via a
+  real end-to-end run against ephemeral Postgres+pgvector and mocked S3
+  (Docker isn't available in this sandbox — see verification note below).
+- [x] Explainability coverage metric read 100% (`1.0`) on that full run.
+
+**Status: implemented, with the attention-rollout and starter-corpus scope
+reductions above carried forward honestly, same as Phase 3's own disclosed
+gaps.** 33 new fast tests pass (`pytest tests/ -q -m "not integration"`);
+the Postgres/pgvector/object-store-dependent tests are real and correctly
+written but skip in this sandbox (no Docker access — `docker compose up -d`
+needs a `docker` group membership this session doesn't have). They were,
+however, additionally verified for real in this session against an
+ephemeral Postgres+pgvector (bundled `pgserver` binaries, TCP mode) and a
+mocked S3 (`moto` server) — see the Phase 5 status note below for what that
+run confirmed, since it exercised Phase 4 and Phase 5 together end-to-end.
 
 ---
 
@@ -306,36 +353,102 @@ items for later phases rather than silently resolved.
 
 ### Steps
 
-- [ ] `L` Expert correction interface: lets a qualified reviewer correct a
-      cell-type label, domain boundary, or interpretation (Art. VII §1).
-      Corrections write to the Phase 0 correction log, not just a UI event.
-- [ ] `M` Escalation queue UI/consumer: the human-review queue node from
-      Phase 1/2 needs an actual reviewer-facing surface now, not just a
-      terminating graph edge.
-- [ ] `L` PEFT/LoRA fine-tuning loop (Art. XII §6): rank 8–16, targeting
-      attention projection layers of the fusion transformer and/or vision
-      encoder head. Trigger rule: fires on `N ≥ 50` accumulated corrections
-      OR 7 elapsed days, whichever first — both numbers are tunable
-      defaults, but the batching rule's *existence* is required.
-- [ ] `M` Promotion gate: a new checkpoint must match or exceed the prior
-      checkpoint's Art. VIII benchmark score on every previously-validated
-      platform, ≤1 point absolute regression tolerated on any single
-      platform, before production promotion (Art. XII §6).
-- [ ] `M` Feedback-value benchmarking (Art. VII §4): measure accuracy
-      improvement attributable to expert feedback, reported per tissue
-      type — this is a dashboard/report, not a one-off analysis, since the
-      Constitution wants the value of human input evidence-backed on an
-      ongoing basis.
-- [ ] `S` Metrics/dashboards from Art. XII §8: veto rate and correction-rate
-      trend as first-class dashboards (not log-mining), latency and
-      confidence distribution per agent.
+- [x] `L` Expert correction interface (`review/correction.py` +
+      `review/api.py`): a FastAPI API layer (no rendered frontend — this
+      repo has no UI code anywhere; confirmed as the right scope), lets a
+      reviewer `POST /corrections` a `{field: cell_type|spatial_domain|
+      interpretation, original_value, corrected_value, reviewer, reason,
+      tissue_type}` correction. Writes straight into the Phase 0
+      `correction_log` table (extended with `task_id`/`field`/
+      `tissue_type` columns), not a separate event log.
+- [x] `M` Escalation queue consumer (`review/escalation.py` +
+      `review/api.py`'s `GET /escalations` / `POST /escalations/{id}/
+      resolve`): `graph/build.py`'s `_human_review_node` now persists every
+      escalation into a real `escalation_queue` table instead of being a
+      terminating no-op edge (gated to the real pipeline so the fast
+      stub-path tests never touch Postgres).
+- [x] `L` PEFT/LoRA fine-tuning loop (`learning/lora_finetune.py`):
+      rank-8 LoRA, through the real `peft` library, genuinely targets the
+      fusion transformer's attention layers (`self_attn` as a whole —
+      `nn.MultiheadAttention.forward` reads `out_proj` as a raw tensor for
+      its fused kernel, never as a submodule call, so naming `out_proj`
+      alone would silently produce an adapter that's never exercised;
+      `peft`'s own `MultiheadAttention` docstring flags this — the module
+      docstring explains this in full). Trigger rule
+      (`should_trigger_finetune`): `N ≥ 50` accumulated corrections OR 7
+      elapsed days, whichever first. **Disclosed scope reduction**: the
+      actual persisted-correction training path (`run_finetune_cycle`)
+      does *not* replay corrections through `GraphFusionTransformer` itself
+      — only its already-fused 128-dim output is persisted per claim
+      (`provenance_log.fused_embedding`), not the raw pre-fusion features —
+      so it trains a small downstream `nn.Linear(128,128)` refiner +
+      classifier directly (plain Adam, not PEFT) on those persisted pairs.
+      The literal "LoRA on the fusion transformer's real attention layers"
+      claim is demonstrated for real, separately, in a fast in-memory test
+      (`test_lora_targets_real_fusion_transformer_attention`). Both facts
+      are stated plainly in `learning/lora_finetune.py`'s docstring.
+- [x] `M` Promotion gate (`learning/promotion.py::evaluate_promotion_gate`
+      / `promote_checkpoint`): a new checkpoint is promoted only if every
+      previously-validated platform's score is within 1 point of the prior
+      checkpoint's — missing a previously-validated platform in the new
+      scores counts as a failure, not a pass-by-omission.
+- [x] `M` Feedback-value benchmarking (`learning/feedback_value.py::
+      feedback_value_report`): per-`tissue_type`, `accuracy_before` is `0.0`
+      by construction (a correction only exists where the system's original
+      output was wrong), `accuracy_after` = the fraction of those same
+      corrected cells the *latest promoted* checkpoint now predicts
+      correctly — an honest, real, ongoing measure (Art. VII §4), not a
+      fabricated global-accuracy number this repo has no held-out ground
+      truth to compute.
+- [x] `S` Metrics/dashboards (`metrics/dashboards.py`): `veto_rate`,
+      `correction_rate_trend`, `latency_by_agent`, `confidence_distribution`
+      all query the new `message_log` table (populated once per emitted
+      envelope via `graph/build.py`'s `_with_message_logging` wrapper, gated
+      to the real pipeline) — measured from a real store, not log-mined.
+      `prometheus_exposition` is exposed at `GET /metrics` on the same
+      FastAPI app.
 
 ### Exit criteria
 
-- A correction submitted through the interface is demonstrably reflected in
-  a subsequent prediction after a fine-tuning cycle (not just logged).
-- A checkpoint promotion has been gated at least once by the regression
-  check, with a real pass/fail outcome.
+- [x] **Verified end-to-end in this session, for real**: a correction
+  submitted through `review/correction.py`'s interface *is* demonstrably
+  reflected in a subsequent, independently-run `analyst_node` prediction
+  after a fine-tuning cycle — not just logged. This required fixing one
+  real bug discovered while verifying it (see status note below).
+- [x] A checkpoint promotion was gated by the regression check with a real
+  pass/fail outcome (`evaluate_promotion_gate`, unit-tested on both
+  outcomes; exercised for real end-to-end too).
+
+**Status: implemented and verified end-to-end, one real bug found and
+fixed along the way.** Docker isn't reachable in this sandbox, so rather
+than leave the correction → fine-tune → re-prediction loop merely
+unit-tested-in-isolation, this session stood up an ephemeral Postgres (with
+`pgvector`, via `pgserver`'s bundled binaries in TCP mode) and a mocked S3
+(a local `moto` server) and ran the actual pipeline through it — both were
+torn down afterward, nothing was left running.
+
+That run surfaced a genuine architectural gap: `analyst/fusion.py::fuse()`
+builds a **freshly random-initialized** `GraphFusionTransformer()` by
+default on *every* call (Phase 3's own disclosed status — "no training
+data/checkpoint exists yet"). That means the same cell got an unrelated
+fused embedding on every pipeline run, so a correction trained against one
+run's embedding could never actually improve a later run's prediction for
+"the same" cell — only the training-time embedding, which
+`feedback_value_report` measured as 100% correct while the live re-run
+still failed. Fixed in `agents/analyst.py` (not Phase 3's
+`analyst/fusion.py`, which stays untouched and closed) by seeding a fixed
+`_fixed_seed_fusion_model()` base instead of the fully-random default —
+still an untrained baseline exactly as Phase 3 disclosed, just now a fixed
+(if arbitrary) function of its input rather than a new random one per call,
+which is what a downstream classifier needs to hold onto a learned
+association at all. `agents/critic.py`'s SHAP wiring uses the identical
+fixed-seed base so its explanations stay in the same coordinate space the
+promoted classifier was trained in. After the fix, the full loop — submit
+correction → `run_finetune_cycle` → `promote_checkpoint` → fresh
+`analyst_node` run — was re-verified to correctly predict every corrected
+cell's corrected label, and `pytest tests/ -q` still shows 78 passed, 32
+skipped, 0 failed (fast suite unaffected, no Postgres touched on the stub
+path).
 
 ---
 
@@ -381,8 +494,12 @@ phases at once:
    defaulted to VGG16 over DINOv2 and skipped StarDist (TensorFlow) as a
    direct consequence — see Phase 3's scope-reduction notes above. Revisit
    defaults once real GPU compute is available.
-2. **Literature corpus source** for the Phase 4 RAG layer — licensing and
-   ingestion scope affects sizing of that task significantly. Still open.
+2. **Partially resolved:** the Phase 4 RAG layer's mechanics (embedding,
+   `pgvector` index, top-k + similarity-threshold retrieval, the
+   "no supporting literature retrieved" flag) are real and proven against a
+   small (35-entry) hand-authored starter corpus
+   (`xai/data/starter_corpus.json`) — licensing and ingestion scope for a
+   *real* literature corpus is still open.
 3. **Partially resolved:** Phase 3's AJI harness is proven against DSB2018
    (fluorescence nuclei demo data, no login required) — 0.791 mean AJI,
    3 images. This is NOT one of Art. VIII §1's four required platform types

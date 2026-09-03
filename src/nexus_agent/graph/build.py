@@ -30,12 +30,76 @@ from nexus_agent.shared.schemas import AgentName, Verdict
 
 
 def _report_node(state: RunState) -> dict:
-    """Terminal stub for the `pass` path. Real report assembly is a later phase."""
-    return {}
+    """Real report assembly (Phase 4, Art. VI §2-3) once Analyst produced real
+    claims; on the Phase 0/1 stub path (no claims, or no evidence bundles
+    stored by Critic) this stays a no-op, unchanged from before Phase 4.
+    """
+    if not (state.get("image_uri") or state.get("expression_uri")):
+        return {}  # Phase 0/1 stub path: unchanged, no-op (no real infra touched)
+
+    analyst_message = next((m for m in state["history"] if m.from_agent == AgentName.ANALYST), None)
+    claims_raw = analyst_message.payload.get("claims", []) if analyst_message else []
+    if not claims_raw:
+        return {}
+
+    from nexus_agent.report.build import ReportClaimInput, render_report, render_report_html
+    from nexus_agent.shared.config import settings
+    from nexus_agent.xai.claims_evidence import fetch_evidence_bundle
+
+    report_claims = [
+        ReportClaimInput(
+            claim_id=c["cell_id"],
+            cell_type=c.get("cell_type"),
+            spatial_domain=c.get("spatial_domain"),
+            confidence=c["confidence"],
+        )
+        for c in claims_raw
+    ]
+
+    evidence_by_claim_id: dict[str, dict] = {}
+    for claim in report_claims:
+        try:
+            bundle = fetch_evidence_bundle(settings.postgres_dsn, state["run_id"], claim.claim_id)
+        except Exception:
+            bundle = None
+        if bundle is not None:
+            evidence_by_claim_id[claim.claim_id] = {
+                "heatmap_uri": bundle.heatmap_uri,
+                "shap_top_genes": bundle.shap_top_genes,
+                "citations": bundle.citations,
+                "no_literature_retrieved": bundle.no_literature_retrieved,
+            }
+
+    report = render_report(state["run_id"], state["task_id"], report_claims, evidence_by_claim_id)
+    return {"report_html": render_report_html(report)}
 
 
 def _human_review_node(state: RunState) -> dict:
-    """Terminal stub for the `escalate` path. Real review queue is Phase 5."""
+    """Terminal node for the `escalate` path. Phase 5 (Art. VII §3) gives it
+    an actual persisted queue via `review/escalation.py`, gated to the real
+    pipeline (image_uri/expression_uri set) so the fast stub-path tests
+    (force_verdict=ESCALATE in tests/test_critic.py, tests/test_graph_smoke.py,
+    tests/test_error_recovery.py) never attempt a Postgres connection --
+    unchanged from before Phase 5.
+    """
+    if not (state.get("image_uri") or state.get("expression_uri")):
+        return {}
+
+    escalated_message = state["history"][-2]  # the message Critic escalated (Art. IV §3)
+    try:
+        from nexus_agent.review.escalation import record_escalation
+        from nexus_agent.shared.config import settings
+
+        record_escalation(
+            settings.postgres_dsn,
+            run_id=state["run_id"],
+            task_id=state["task_id"],
+            claim_id=None,
+            payload=escalated_message.payload,
+            confidence=escalated_message.confidence,
+        )
+    except Exception:
+        pass  # best-effort persistence; never block graph completion on it
     return {}
 
 
@@ -60,12 +124,54 @@ def _critic_router(state: RunState) -> str:
     raise ValueError(f"critic produced no routable verdict: {verdict!r}")
 
 
+def _with_message_logging(node_fn):
+    """Wrap a node so every `MessageEnvelope` it emits is also persisted into
+    `message_log` (Art. XII §8: veto rate/latency/confidence-distribution
+    dashboards must be measured from a real queryable store, not mined from
+    checkpointer blobs). Gated to the real pipeline (image_uri/expression_uri
+    set) so the fast stub-path tests never attempt a Postgres connection --
+    unchanged from before Phase 5.
+    """
+
+    def wrapped(state: RunState) -> dict:
+        result = node_fn(state)
+        messages = result.get("history") if isinstance(result, dict) else None
+        if messages and (state.get("image_uri") or state.get("expression_uri")):
+            try:
+                import psycopg
+
+                from nexus_agent.shared.config import settings
+
+                with psycopg.connect(settings.postgres_dsn, autocommit=True) as conn:
+                    for message in messages:
+                        conn.execute(
+                            """
+                            INSERT INTO message_log
+                                (run_id, task_id, from_agent, to_agent, verdict, confidence)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                message.run_id,
+                                message.task_id,
+                                message.from_agent.value,
+                                message.to_agent.value,
+                                message.payload.get("verdict"),
+                                message.confidence,
+                            ),
+                        )
+            except Exception:
+                pass  # best-effort dashboard substrate; never block the graph on it
+        return result
+
+    return wrapped
+
+
 def build_graph() -> StateGraph:
     graph = StateGraph(RunState)
-    graph.add_node("coordinator", coordinator_node)
-    graph.add_node("vision", vision_node)
-    graph.add_node("analyst", analyst_node)
-    graph.add_node("critic", critic_node)
+    graph.add_node("coordinator", _with_message_logging(coordinator_node))
+    graph.add_node("vision", _with_message_logging(vision_node))
+    graph.add_node("analyst", _with_message_logging(analyst_node))
+    graph.add_node("critic", _with_message_logging(critic_node))
     graph.add_node("report", _report_node)
     graph.add_node("human_review", _human_review_node)
 

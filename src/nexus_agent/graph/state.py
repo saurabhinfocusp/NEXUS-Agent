@@ -40,3 +40,8 @@ class RunState(TypedDict, total=False):
     # it detects it's retrying after a Critic veto (see agents/common.py's
     # is_retry_after_veto), so the retry isn't artificially suppressed again.
     stub_confidence_override: dict[AgentName, float] | None
+    # Phase 4 (Art. VI §2-3): the confidence-weighted report `_report_node`
+    # renders on the `pass` path, once real Analyst claims + XAI evidence
+    # bundles exist. `None` on the stub path (unchanged Phase 0-3 behavior)
+    # and whenever there are no claims to report on.
+    report_html: str | None
