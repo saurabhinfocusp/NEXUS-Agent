@@ -60,10 +60,43 @@ pytest tests/ -m integration            # integration tests: Docker + real
                                          # and dashboard tests.
 ```
 
+## Upload-and-view webapp
+
+A small FastAPI + vanilla-JS frontend (`src/nexus_agent/webapp/`) lets you
+submit a sample and watch it move through the real pipeline from a
+browser, instead of invoking the graph from Python. It composes the
+reviewer API (below) under the same origin at `/review/*`.
+
+```bash
+# 1. Local infra must be up first (see Quickstart) -- Postgres for run
+#    tracking/corrections/escalations, MinIO for the uploaded image and
+#    expression file.
+docker compose up -d   # falls back to `docker-compose up -d` if your
+                        # environment only has the v1 binary
+
+# 2. Launch the app
+conda activate nexus-agent
+uvicorn nexus_agent.webapp.api:app --reload --host 127.0.0.1 --port 8420
+```
+
+Open `http://127.0.0.1:8420` in a browser. Running inside VS Code (locally
+or over a remote/SSH/Codespaces connection)? Use its port forwarding
+instead of a plain browser tab:
+
+- VS Code usually auto-detects the listening port and offers an "Open in
+  Browser" toast — click it, or
+- open the **Ports** panel (**PORTS** tab next to Terminal, or
+  `Ctrl+Shift+P` → "Ports: Focus on Ports View"), click **Forward a
+  Port**, enter `8420`, then click the 🌐 icon on that row to open it.
+
+A submitted run takes several minutes to reach `done` — real CellPose +
+VGG16 inference on CPU, not a hang — the page polls in the background so
+there's no need to keep it in the foreground.
+
 ## Reviewer API (Phase 5)
 
 Corrections and the human-escalation queue are served as a FastAPI app —
-there's no rendered frontend, this repo is a backend/library:
+mounted at `/review/*` under the webapp above, or standalone:
 
 ```bash
 uvicorn nexus_agent.review.api:app --reload
@@ -162,7 +195,9 @@ src/nexus_agent/
 ├── learning/   # Cell-type head, PEFT/LoRA fine-tune loop, promotion gate,
 │               # feedback-value reporting (Art. VII §2/§4, Art. XII §6)
 ├── metrics/    # Veto-rate/latency/confidence dashboards (Art. XII §8)
-└── graph/      # LangGraph StateGraph assembly and routing
+├── graph/      # LangGraph StateGraph assembly and routing
+└── webapp/     # Upload-and-view frontend: FastAPI app + static/ (HTML/CSS/JS,
+                # no build step), mounts review/api.py at /review/*
 tests/          # pytest; integration tests marked `@pytest.mark.integration`
 db/schema.sql   # Postgres init script: provenance_log, correction_log,
                 # literature_chunks, xai_evidence, message_log,

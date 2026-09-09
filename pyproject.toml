@@ -36,6 +36,13 @@ dependencies = [
     "peft>=0.11",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    # webapp (upload-and-view frontend): scikit-image was already an
+    # installed transitive dependency of cellpose -- made explicit here
+    # since webapp/uploads.py imports it directly. python-multipart is
+    # required by FastAPI for UploadFile/Form parsing and wasn't pulled in
+    # by anything else.
+    "scikit-image",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

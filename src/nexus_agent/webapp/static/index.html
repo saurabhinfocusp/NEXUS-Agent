@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEXUS-Agent</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<a class="skip-link" href="#main-content">Skip to main content</a>
+
+<header class="topbar">
+  <div>
+    <h1>NEXUS-Agent</h1>
+    <p>Spatial multi-omics analysis — submit a sample, track the pipeline, review its claims.</p>
+  </div>
+  <button type="button" id="theme-toggle" aria-label="Toggle color theme">
+    <span id="theme-toggle-icon" aria-hidden="true">🌓</span>
+    <span id="theme-toggle-label">Theme</span>
+  </button>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button type="button" class="tab-btn" id="tab-run" role="tab" aria-selected="true" aria-controls="run-view" tabindex="0" data-view="run-view">Submit &amp; Track</button>
+  <button type="button" class="tab-btn" id="tab-queue" role="tab" aria-selected="false" aria-controls="queue-view" tabindex="-1" data-view="queue-view">Reviewer Queue</button>
+</nav>
+
+<main id="main-content">
+
+  <!-- ============== Submit & Track ============== -->
+  <section id="run-view" class="view" role="tabpanel" aria-labelledby="tab-run" tabindex="0">
+
+    <div class="card" id="upload-card">
+      <div class="card-head">
+        <h2>Submit a sample</h2>
+        <button type="button" class="ghost small" id="new-run-btn" hidden>+ New run</button>
+      </div>
+      <p class="subtitle">Upload a histology/multiplex image and its matching spatial expression file
+        (<code>.h5ad</code>). Real CellPose+VGG16 inference can take several minutes on CPU — this
+        page polls in the background, no need to keep it in the foreground.</p>
+
+      <form id="upload-form">
+        <div class="field">
+          <label for="sample_id">Sample ID</label>
+          <input type="text" id="sample_id" name="sample_id" required value="sample-1">
+        </div>
+
+        <div class="form-row">
+          <div class="field">
+            <span id="image-label" class="field-label">Image file (PNG / JPEG / TIFF)</span>
+            <input type="file" id="image" name="image" class="dropzone-input visually-hidden" accept=".png,.jpg,.jpeg,.tif,.tiff" required aria-describedby="image-label">
+            <label class="dropzone" id="image-drop" for="image">Click or drop image file here</label>
+          </div>
+          <div class="field">
+            <span id="expression-label" class="field-label">Expression file (.h5ad)</span>
+            <input type="file" id="expression" name="expression" class="dropzone-input visually-hidden" accept=".h5ad" required aria-describedby="expression-label">
+            <label class="dropzone" id="expression-drop" for="expression">Click or drop .h5ad file here</label>
+          </div>
+        </div>
+
+        <button type="submit" class="primary" id="submit-btn">Run pipeline</button>
+        <div class="error-banner" id="submit-error" role="alert" hidden></div>
+      </form>
+    </div>
+
+    <div class="card" id="recent-runs-card">
+      <h2>Recent runs</h2>
+      <div class="chip-row" id="recent-runs-chips">
+        <span class="empty-hint">No runs yet on this browser.</span>
+      </div>
+      <form class="inline-form" id="load-run-form">
+        <label for="load-run-id" class="visually-hidden">Run ID</label>
+        <input type="text" id="load-run-id" placeholder="Or paste a run ID to load it…">
+        <button type="submit" class="ghost small">Load</button>
+      </form>
+    </div>
+
+    <div class="card" id="status-card" hidden>
+      <h2>Run status</h2>
+      <div class="stepper" id="stepper">
+        <div class="step" data-step="pending">Submitted</div>
+        <div class="step" data-step="running">Running</div>
+        <div class="step" data-step="done">Complete</div>
+      </div>
+      <div class="status-line" aria-live="polite" aria-atomic="true">
+        <span class="badge" id="status-badge"></span>
+        <span id="status-text"></span>
+        <span class="spinner" id="status-spinner" hidden aria-hidden="true"></span>
+      </div>
+    </div>
+
+    <div class="card" id="report-card" hidden>
+      <h2>Report</h2>
+      <iframe id="report-frame"></iframe>
+    </div>
+
+    <div class="card" id="claims-card" hidden>
+      <h2>Claims — submit a correction</h2>
+      <p class="subtitle">Corrections are captured as structured training pairs for the next fine-tune cycle.</p>
+      <div class="claims-grid" id="claims-grid"></div>
+    </div>
+
+  </section>
+
+  <!-- ============== Reviewer Queue ============== -->
+  <section id="queue-view" class="view" role="tabpanel" aria-labelledby="tab-queue" tabindex="0" hidden>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Pending escalations</h2>
+        <button type="button" class="ghost small" id="refresh-escalations">Refresh</button>
+      </div>
+      <div id="escalations-list">
+        <div class="loading-row">Loading…</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Correction history</h2>
+        <button type="button" class="ghost small" id="refresh-corrections">Refresh</button>
+      </div>
+      <form class="inline-form" id="corrections-filter-form">
+        <label for="corrections-run-filter" class="visually-hidden">Filter by run ID</label>
+        <input type="text" id="corrections-run-filter" placeholder="Filter by run ID (optional)…">
+        <button type="submit" class="ghost small">Filter</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>When</th><th>Run</th><th>Claim</th><th>Field</th>
+              <th>Original → Corrected</th><th>Reviewer</th><th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="corrections-body">
+            <tr><td colspan="7" class="loading-row">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

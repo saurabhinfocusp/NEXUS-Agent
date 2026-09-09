@@ -128,3 +128,21 @@ CREATE TABLE IF NOT EXISTS finetune_runs (
     promoted            BOOLEAN NOT NULL DEFAULT false,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- webapp (upload-and-view frontend): tracks an async pipeline run submitted
+-- via POST /api/runs, since `graph.invoke()` (real CellPose/VGG16 inference)
+-- takes minutes and must not block the HTTP request that started it.
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    run_id          UUID PRIMARY KEY,
+    task_id         UUID NOT NULL,
+    sample_id       TEXT NOT NULL,
+    image_uri       TEXT NOT NULL,
+    expression_uri  TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    verdict         TEXT,
+    claims          JSONB,
+    report_html     TEXT,
+    error           TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at    TIMESTAMPTZ
+);
