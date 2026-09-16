@@ -17,6 +17,7 @@ for real without being forced on default test runs.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from functools import lru_cache
 
 import numpy as np
 import torch
@@ -57,6 +58,18 @@ class Vgg16Embedder(EmbeddingBackend):
         features = self._backbone(tensor)  # (1, 512, H', W')
         pooled = features.mean(dim=[2, 3]).squeeze(0).numpy().astype(np.float64)
         return np.concatenate([pooled, np.zeros(EMBEDDING_DIM - self._RAW_DIM)])
+
+
+@lru_cache(maxsize=1)
+def get_vgg16_embedder() -> Vgg16Embedder:
+    """Return a reused VGG16 embedder instance for all uploaded-cell inference."""
+    return Vgg16Embedder()
+
+
+@lru_cache(maxsize=1)
+def get_dinov2_embedder() -> "Dinov2Embedder":
+    """Return a reused DINOv2 embedder instance when the native 1024-dim path is selected."""
+    return Dinov2Embedder()
 
 
 class Dinov2Embedder(EmbeddingBackend):

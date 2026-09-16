@@ -48,33 +48,37 @@ def _segment_and_embed(image_uri: str) -> tuple[list[VisionCellRecord], float, l
     CellPose, embed each cell crop (VGG16 default -- see ROADMAP.md's
     Phase 3 scope notes for why), and build real VisionCellRecords.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     from nexus_agent.data.object_store import get_array
-    from nexus_agent.vision.embedding import Vgg16Embedder
+    from nexus_agent.vision.embedding import get_vgg16_embedder
     from nexus_agent.vision.segmentation import cells_from_mask, crop_patch, segment_cells
 
     image = get_array(image_uri)
     label_mask = segment_cells(image)
     cell_infos = cells_from_mask(label_mask)
 
-    embedder = Vgg16Embedder()
-    records = [
-        VisionCellRecord(
+    embedder = get_vgg16_embedder()
+
+    def _build_record(info: dict) -> VisionCellRecord:
+        patch = crop_patch(image, info["bbox"])
+        return VisionCellRecord(
             cell_id=info["cell_id"],
             centroid_xy=info["centroid_xy"],
             mask_polygon=info["mask_polygon"],
-            embedding_vector=embedder.embed_patch(crop_patch(image, info["bbox"])).tolist(),
+            embedding_vector=embedder.embed_patch(patch).tolist(),
             embedding_model_version=embedder.model_version,
         )
-        for info in cell_infos
-    ]
 
-    if records:
-        confidence = 0.8
-        reasoning = [f"CellPose segmented {len(records)} cell(s) from {image_uri}", f"embedded via {embedder.model_version}"]
-    else:
-        confidence = 0.05
-        reasoning = [f"CellPose found no cells in {image_uri}"]
+    if not cell_infos:
+        return [], 0.05, [f"CellPose found no cells in {image_uri}"]
 
+    max_workers = min(8, max(1, len(cell_infos)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        records = list(executor.map(_build_record, cell_infos))
+
+    confidence = 0.8
+    reasoning = [f"CellPose segmented {len(records)} cell(s) from {image_uri}", f"embedded via {embedder.model_version}"]
     return records, confidence, reasoning
 
 

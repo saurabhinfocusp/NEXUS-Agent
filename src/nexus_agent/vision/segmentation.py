@@ -10,8 +10,18 @@ NotImplementedError so the interface is real even though the backend isn't.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 from skimage.measure import find_contours, regionprops
+
+
+@lru_cache(maxsize=2)
+def get_cellpose_model(model_type: str = "cyto3", gpu: bool = False):
+    """Create and cache the CellPose model instance for repeated uploads."""
+    from cellpose import models
+
+    return models.CellposeModel(gpu=gpu, pretrained_model=model_type)
 
 
 def segment_cells(image: np.ndarray, *, model_type: str = "cyto3", diameter: float | None = None) -> np.ndarray:
@@ -26,9 +36,7 @@ def segment_cells(image: np.ndarray, *, model_type: str = "cyto3", diameter: flo
     unified checkpoint, not a standalone cyto3-specific one. Disclosed here
     rather than silently implying a smaller/different model actually runs.
     """
-    from cellpose import models
-
-    model = models.CellposeModel(gpu=False, pretrained_model=model_type)
+    model = get_cellpose_model(model_type=model_type, gpu=False)
     masks, _flows, _styles = model.eval(image, diameter=diameter)
     return masks
 

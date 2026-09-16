@@ -37,6 +37,7 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadF
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
+from starlette.concurrency import run_in_threadpool
 
 from nexus_agent.data.object_store import get_array, put_anndata, put_array
 from nexus_agent.review.api import app as review_app
@@ -92,19 +93,25 @@ async def create_pipeline_run(
     if not expression or not all(f.filename for f in expression):
         raise HTTPException(status_code=400, detail="expression file(s) missing a filename")
 
-    image_array = read_image_upload(await image.read(), image.filename)
+    # Decoding (TIFF/h5ad/mtx-bundle parsing) and the object-store puts below
+    # are synchronous, CPU/I/O-bound calls -- run each in FastAPI/Starlette's
+    # threadpool rather than inline, so a large upload doesn't block the
+    # single asyncio event loop (and, with it, every other request/poll this
+    # process is serving) for the length of the decode/upload.
+    image_array = await run_in_threadpool(read_image_upload, await image.read(), image.filename)
     try:
         expression_files = [(f.filename, await f.read()) for f in expression]
-        adata = read_expression_upload(expression_files)
+        adata = await run_in_threadpool(read_expression_upload, expression_files)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     run_id = uuid.uuid4()
     task_id = uuid.uuid4()
-    image_uri = put_array(f"webapp/{run_id}/image.npy", image_array)
-    expression_uri = put_anndata(f"webapp/{run_id}/expression.h5ad", adata)
+    image_uri = await run_in_threadpool(put_array, f"webapp/{run_id}/image.npy", image_array)
+    expression_uri = await run_in_threadpool(put_anndata, f"webapp/{run_id}/expression.h5ad", adata)
 
-    create_run(
+    await run_in_threadpool(
+        create_run,
         settings.postgres_dsn,
         run_id=run_id,
         task_id=task_id,
