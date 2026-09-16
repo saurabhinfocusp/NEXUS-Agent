@@ -17,8 +17,11 @@ from nexus_agent.shared.schemas import AgentName
 # stub nodes report "0.1.0" since they carry no real model/prompt logic yet.
 COMPONENT_VERSIONS: dict[AgentName, str] = {
     AgentName.COORDINATOR: "0.1.0",
+    AgentName.QC: "0.1.0",
     AgentName.VISION: "0.1.0",
     AgentName.ANALYST: "0.1.0",
+    AgentName.SPATIAL: "0.1.0",
+    AgentName.BIOLOGY: "0.1.0",
     AgentName.CRITIC: "0.1.0",
 }
 

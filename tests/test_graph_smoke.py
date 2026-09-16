@@ -120,3 +120,227 @@ def test_no_agent_bypasses_critic_to_reach_report():
 
     non_critic_messages = result["history"][:-1]
     assert all(m.to_agent != AgentName.REPORT for m in non_critic_messages)
+
+
+def test_stub_path_never_adds_qc_to_the_plan():
+    # QC is only prepended when a real data URI is present (mirrors every
+    # other real-path gate) -- the Phase 0/1 synthetic-stub path (no
+    # image_uri/expression_uri, what this whole file otherwise exercises)
+    # must stay exactly as it was before QC existed.
+    graph = compile_with_memory()
+    run_id = uuid.uuid4()
+
+    result = graph.invoke(_initial_state(run_id=run_id), config=_config(run_id))
+
+    assert AgentName.QC not in [m.from_agent for m in result["history"]]
+
+
+def test_qc_pass_routes_to_analyst_then_flows_through_unchanged(monkeypatch):
+    # Expression-only modality keeps this test on Analyst's lightweight
+    # ingest-only real path (no Vision -> no CellPose/VGG16 model weights
+    # needed), so this stays fast/Docker-free like the rest of this file.
+    import numpy as np
+    import pandas as pd
+    from anndata import AnnData
+
+    rng = np.random.default_rng(0)
+    adata = AnnData(
+        X=rng.poisson(50, size=(4, 40)).astype(np.float32),  # high enough total_counts to pass QC
+        obs=pd.DataFrame(index=[f"cell_{i}" for i in range(4)]),
+    )
+    monkeypatch.setattr("nexus_agent.data.object_store.get_anndata", lambda uri: adata)
+    monkeypatch.setattr("nexus_agent.data.object_store.put_bytes", lambda key, data: "s3://fake/qc_plot.png")
+
+    graph = compile_with_memory()
+    run_id = uuid.uuid4()
+    goal = AnalyticalGoal(sample_id="sample-1", modalities=["expression"])
+
+    result = graph.invoke(
+        _initial_state(run_id=run_id, goal=goal, expression_uri="s3://fake-bucket/expr.h5ad"),
+        config=_config(run_id),
+    )
+
+    from_agents = [m.from_agent for m in result["history"]]
+    assert from_agents == [AgentName.COORDINATOR, AgentName.QC, AgentName.ANALYST, AgentName.CRITIC]
+    assert result["qc_verdict"] == "pass"
+
+
+def test_qc_fail_routes_directly_to_human_review_without_vision_or_critic(monkeypatch):
+    import numpy as np
+
+    blank_image = np.zeros((16, 16), dtype=np.uint8)  # zero focus signal -> QC fail
+    monkeypatch.setattr("nexus_agent.data.object_store.get_array", lambda uri: blank_image)
+
+    graph = compile_with_memory()
+    run_id = uuid.uuid4()
+    goal = AnalyticalGoal(sample_id="sample-1", modalities=["image"])
+
+    result = graph.invoke(
+        _initial_state(run_id=run_id, goal=goal, image_uri="s3://fake-bucket/image.npy"),
+        config=_config(run_id),
+    )
+
+    from_agents = [m.from_agent for m in result["history"]]
+    assert from_agents == [AgentName.COORDINATOR, AgentName.QC]
+    assert result["qc_verdict"] == "fail"
+    assert result["history"][-1].to_agent == AgentName.HUMAN_REVIEW
+    assert not any(m.from_agent in (AgentName.VISION, AgentName.ANALYST, AgentName.CRITIC) for m in result["history"])
+
+
+def test_run_spatial_analysis_flag_routes_analyst_through_spatial_before_critic(monkeypatch):
+    import numpy as np
+    import pandas as pd
+    from anndata import AnnData
+
+    rng = np.random.default_rng(0)
+    adata = AnnData(
+        X=rng.poisson(50, size=(6, 20)).astype(np.float32),
+        obs=pd.DataFrame(index=[f"cell_{i}" for i in range(6)]),
+    )
+    adata.obsm["spatial"] = rng.random((6, 2)) * 100
+    monkeypatch.setattr("nexus_agent.data.object_store.get_anndata", lambda uri: adata)
+    monkeypatch.setattr("nexus_agent.data.object_store.put_bytes", lambda key, data: "s3://fake/qc_plot.png")
+
+    graph = compile_with_memory()
+    run_id = uuid.uuid4()
+    goal = AnalyticalGoal(sample_id="sample-1", modalities=["expression"], run_spatial_analysis=True)
+
+    result = graph.invoke(
+        _initial_state(run_id=run_id, goal=goal, expression_uri="s3://fake-bucket/expr.h5ad"),
+        config=_config(run_id),
+    )
+
+    from_agents = [m.from_agent for m in result["history"]]
+    assert from_agents == [
+        AgentName.COORDINATOR,
+        AgentName.QC,
+        AgentName.ANALYST,
+        AgentName.SPATIAL,
+        AgentName.CRITIC,
+    ]
+    assert result["verdict"] == Verdict.PASS
+
+
+def test_run_spatial_analysis_flag_off_skips_spatial():
+    graph = compile_with_memory()
+    run_id = uuid.uuid4()
+    goal = AnalyticalGoal(sample_id="sample-1", modalities=["expression"], run_spatial_analysis=False)
+
+    result = graph.invoke(_initial_state(run_id=run_id, goal=goal), config=_config(run_id))
+
+    assert AgentName.SPATIAL not in [m.from_agent for m in result["history"]]
+
+
+def _patch_biology_network_backends(monkeypatch):
+    # Fast/Docker-free: no real Enrichr/g:Profiler/STRING/literature-RAG
+    # network calls -- every backend is short-circuited to "nothing found",
+    # which is still a valid (stub-fallback) Biology output.
+    import gprofiler
+    import gseapy
+    import requests
+
+    monkeypatch.setattr(gseapy, "enrichr", lambda **kwargs: type("R", (), {"results": __import__("pandas").DataFrame()})())
+
+    class _FakeGProfiler:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def profile(self, organism, query):
+            return __import__("pandas").DataFrame()
+
+    monkeypatch.setattr(gprofiler, "GProfiler", _FakeGProfiler)
+
+    def _fake_post(url, data=None, timeout=None):
+        raise RuntimeError("network disabled in fast tests")
+
+    monkeypatch.setattr(requests, "post", _fake_post)
+
+
+def test_run_enrichment_analysis_flag_routes_analyst_through_biology_before_critic(monkeypatch):
+    import numpy as np
+    import pandas as pd
+    from anndata import AnnData
+
+    rng = np.random.default_rng(0)
+    adata = AnnData(
+        X=rng.poisson(50, size=(6, 20)).astype(np.float32),
+        obs=pd.DataFrame(index=[f"cell_{i}" for i in range(6)]),
+        var=pd.DataFrame(index=[f"GENE{i}" for i in range(20)]),
+    )
+    monkeypatch.setattr("nexus_agent.data.object_store.get_anndata", lambda uri: adata)
+    monkeypatch.setattr("nexus_agent.data.object_store.put_bytes", lambda key, data: "s3://fake/qc_plot.png")
+    _patch_biology_network_backends(monkeypatch)
+
+    graph = compile_with_memory()
+    run_id = uuid.uuid4()
+    goal = AnalyticalGoal(sample_id="sample-1", modalities=["expression"], run_enrichment_analysis=True)
+
+    result = graph.invoke(
+        _initial_state(run_id=run_id, goal=goal, expression_uri="s3://fake-bucket/expr.h5ad"),
+        config=_config(run_id),
+    )
+
+    from_agents = [m.from_agent for m in result["history"]]
+    assert from_agents == [
+        AgentName.COORDINATOR,
+        AgentName.QC,
+        AgentName.ANALYST,
+        AgentName.BIOLOGY,
+        AgentName.CRITIC,
+    ]
+    # All enrichment backends are mocked to return nothing here, so Biology
+    # falls back to its low-confidence placeholder claim (agents/biology.py)
+    # -- below Critic's escalate threshold by design, so this terminates via
+    # human_review rather than looping (see that fallback's docstring).
+    assert result["verdict"] == Verdict.ESCALATE
+
+
+def test_run_enrichment_analysis_flag_off_skips_biology():
+    graph = compile_with_memory()
+    run_id = uuid.uuid4()
+    goal = AnalyticalGoal(sample_id="sample-1", modalities=["expression"], run_enrichment_analysis=False)
+
+    result = graph.invoke(_initial_state(run_id=run_id, goal=goal), config=_config(run_id))
+
+    assert AgentName.BIOLOGY not in [m.from_agent for m in result["history"]]
+
+
+def test_both_spatial_and_enrichment_flags_chain_analyst_spatial_biology_critic(monkeypatch):
+    import numpy as np
+    import pandas as pd
+    from anndata import AnnData
+
+    rng = np.random.default_rng(0)
+    adata = AnnData(
+        X=rng.poisson(50, size=(6, 20)).astype(np.float32),
+        obs=pd.DataFrame(index=[f"cell_{i}" for i in range(6)]),
+        var=pd.DataFrame(index=[f"GENE{i}" for i in range(20)]),
+    )
+    adata.obsm["spatial"] = rng.random((6, 2)) * 100
+    monkeypatch.setattr("nexus_agent.data.object_store.get_anndata", lambda uri: adata)
+    monkeypatch.setattr("nexus_agent.data.object_store.put_bytes", lambda key, data: "s3://fake/qc_plot.png")
+    _patch_biology_network_backends(monkeypatch)
+
+    graph = compile_with_memory()
+    run_id = uuid.uuid4()
+    goal = AnalyticalGoal(
+        sample_id="sample-1",
+        modalities=["expression"],
+        run_spatial_analysis=True,
+        run_enrichment_analysis=True,
+    )
+
+    result = graph.invoke(
+        _initial_state(run_id=run_id, goal=goal, expression_uri="s3://fake-bucket/expr.h5ad"),
+        config=_config(run_id),
+    )
+
+    from_agents = [m.from_agent for m in result["history"]]
+    assert from_agents == [
+        AgentName.COORDINATOR,
+        AgentName.QC,
+        AgentName.ANALYST,
+        AgentName.SPATIAL,
+        AgentName.BIOLOGY,
+        AgentName.CRITIC,
+    ]

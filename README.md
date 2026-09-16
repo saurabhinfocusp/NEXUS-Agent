@@ -18,18 +18,25 @@ report.
 
 ## Architecture at a glance
 
-A LangGraph `StateGraph` routes work between four specialist agents —
-Coordinator, Vision, Analyst, Critic/XAI — communicating via schema-validated
-messages over a Redis Streams bus, with every claim in the final report
+A LangGraph `StateGraph` routes work between seven specialist agents —
+Coordinator, QC, Vision, Analyst, Spatial Transcriptomics, Biology
+(Enrichment), Critic/XAI — communicating via schema-validated messages over
+a Redis Streams bus, with every biological claim in the final report
 required to carry a visual attribution map, a feature-importance score,
-and/or a literature citation (see Constitution Art. III and VI). Critic
-generates that evidence for real (Grad-CAM++, SHAP, a pgvector-backed RAG
-literature layer) and persists it independently of the report; a FastAPI
-reviewer surface lets an expert correct a claim, which feeds a real
-PEFT/LoRA fine-tuning loop gated by a promotion regression-check before a
-new checkpoint ever reaches a live prediction. Full architectural and
-constitutional detail lives in the two docs linked above; this README only
-covers running what's built so far.
+and/or a literature citation (see Constitution Art. III and VI). QC runs
+first as a raw-data quality gate (Scanpy/scikit-image metrics), ahead of
+Vision/Analyst, and escalates straight to human review on failure rather
+than passing a claim through Critic. Spatial Transcriptomics and Biology
+are optional specialists that run after Analyst — spatial-neighborhood
+biology via Squidpy, and gene-set/pathway enrichment via gseapy/g:Profiler/
+STRING — and, like Vision/Analyst, their claims are always reviewed by
+Critic before reaching the report. Critic generates that evidence for real
+(Grad-CAM++, SHAP, a pgvector-backed RAG literature layer) and persists it
+independently of the report; a FastAPI reviewer surface lets an expert
+correct a claim, which feeds a real PEFT/LoRA fine-tuning loop gated by a
+promotion regression-check before a new checkpoint ever reaches a live
+prediction. Full architectural and constitutional detail lives in the two
+docs linked above; this README only covers running what's built so far.
 
 ## Quickstart
 
@@ -92,6 +99,26 @@ instead of a plain browser tab:
 A submitted run takes several minutes to reach `done` — real CellPose +
 VGG16 inference on CPU, not a hang — the page polls in the background so
 there's no need to keep it in the foreground.
+
+The expression file isn't limited to `.h5ad`: `.loom`, a 10x Genomics
+`.h5` feature-barcode matrix, a zipped/tarred 10x mtx bundle, or
+`matrix.mtx` + `barcodes.tsv` + `features.tsv` (each optionally `.gz`)
+selected together in the browser with no zipping step (the file picker's
+multi-select) are all accepted and converted to the same `AnnData` shape
+(`webapp/uploads.py::read_expression_upload`). Either the image or a
+single expression file can also be plain-gzipped on its own (e.g.
+`image.tiff.gz`, `expression.h5ad.gz`) -- it's decompressed automatically
+before the usual extension-based dispatch. Seurat/SingleCellExperiment
+`.rds` objects aren't read directly — R's native serialization needs a
+real R+Bioconductor runtime to parse reliably, which this project doesn't
+otherwise depend on. Convert on the R side first, e.g.
+`SeuratDisk::SaveH5Seurat()` + `Convert(dest = "h5ad")`, or
+`sceasy::convertFormat(obj, from = "seurat", to = "anndata")`, then upload
+the resulting `.h5ad`. A 10x Genomics Loupe `.cloupe` file can't be read
+at all -- unlike `.rds`, its format is proprietary and undocumented with
+no reader anywhere outside 10x's own Loupe Browser to build on. Upload
+the `*_feature_bc_matrix.h5` or mtx bundle it was generated from instead
+(both already supported).
 
 ## Reviewer API (Phase 5)
 
@@ -166,6 +193,14 @@ the single-synthetic-cell stub shown above. See
 [tests/test_graph_real_pipeline.py](tests/test_graph_real_pipeline.py) for
 a complete example.
 
+`AnalyticalGoal` also takes `run_spatial_analysis`/`run_enrichment_analysis`
+(both default `False`) to opt into the Spatial Transcriptomics and Biology
+(Enrichment) agents; both require `"expression"` in `modalities` and run
+after Analyst, before Critic. QC runs automatically whenever `image_uri`/
+`expression_uri` is set — no flag needed — and a `qc_verdict` of `"fail"`
+routes the run straight to human review, skipping Vision/Analyst/Critic
+entirely for that run.
+
 On that real-pipeline path, Critic also generates Art. VI evidence (a
 Grad-CAM++ heatmap, a SHAP gene-importance ranking once a Phase 5 checkpoint
 has been promoted, and a RAG literature citation or an honest
@@ -184,7 +219,9 @@ src/nexus_agent/
 ├── shared/     # MessageEnvelope + AnalyticalGoal schemas, versioning, env config
 ├── bus/        # Redis Streams client — validates before publishing
 ├── data/       # SpatialData container, S3 object store client, provenance writer
-├── agents/     # Coordinator, Vision, Analyst, Critic — contracts + node logic
+├── agents/     # Coordinator, QC, Vision, Analyst, Spatial Transcriptomics,
+│               # Biology (Enrichment), Critic — contracts + node logic
+│               # (Art. III §1; Spatial/Biology/QC are Art. III §4 extensions)
 ├── vision/     # CellPose segmentation, VGG16/DINOv2 embedding (Art. XII §2)
 ├── analyst/    # Scanpy/Squidpy ingestion, graph-transformer fusion (Art. XII §3)
 ├── benchmark/  # Segmentation AJI metric + DSB2018 demo benchmark harness

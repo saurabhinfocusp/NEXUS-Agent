@@ -3,12 +3,15 @@
 /* ---------------------------------------------------------------------
  * Small persisted bits of client state: which runs this browser has
  * submitted (the API has no "list runs" endpoint, so this is the only
- * way to come back to a past run without knowing its UUID by heart)
- * and the reviewer's display name (so they don't retype it per claim).
+ * way to come back to a past run without knowing its UUID by heart),
+ * each with its last-known status so a reload can show something
+ * immediately instead of a blank list, and the reviewer's display name
+ * (so they don't retype it per claim).
  * ------------------------------------------------------------------- */
 const RECENT_RUNS_KEY = "nexus.recentRuns";
 const REVIEWER_NAME_KEY = "nexus.reviewerName";
-const MAX_RECENT_RUNS = 8;
+const MAX_RECENT_RUNS = 30;
+const ACTIVE_STATUSES = ["pending", "running"];
 
 function getRecentRuns() {
   try {
@@ -18,9 +21,13 @@ function getRecentRuns() {
   }
 }
 
-function saveRecentRun(runId, sampleId) {
+// `status` is the exact badge class to show: the raw "pending"/"running"/
+// "failed" while in flight, or the verdict ("pass"/"veto"/"escalate")
+// once done -- storing it pre-resolved this way means the cached copy
+// renders with `updateRunEntryStatus` exactly like a fresh poll response.
+function upsertRunRecord(runId, sampleId, status) {
   const runs = getRecentRuns().filter((r) => r.run_id !== runId);
-  runs.unshift({ run_id: runId, sample_id: sampleId });
+  runs.unshift({ run_id: runId, sample_id: sampleId, status });
   localStorage.setItem(RECENT_RUNS_KEY, JSON.stringify(runs.slice(0, MAX_RECENT_RUNS)));
 }
 
@@ -80,13 +87,14 @@ function initDropzone(dropId, inputId) {
   const defaultText = drop.textContent;
 
   const showFile = () => {
-    if (input.files.length > 0) {
-      drop.textContent = input.files[0].name;
-      drop.classList.add("has-file");
-    } else {
+    if (input.files.length === 0) {
       drop.textContent = defaultText;
       drop.classList.remove("has-file");
+      return;
     }
+    const names = Array.from(input.files).map((f) => f.name);
+    drop.textContent = names.length === 1 ? names[0] : `${names.length} files: ${names.join(", ")}`;
+    drop.classList.add("has-file");
   };
 
   input.addEventListener("change", showFile);
@@ -106,9 +114,12 @@ function initDropzone(dropId, inputId) {
 }
 
 /* ---------------------------------------------------------------------
- * Submit & Track
+ * Submit & Track -- each tracked run gets its own DOM card and its own
+ * polling interval (keyed in `pollHandles`), so submitting a new job
+ * never disturbs whatever else is currently running or already done.
+ * The upload form itself is never hidden: nothing stops another submit.
  * ------------------------------------------------------------------- */
-let pollHandle = null;
+const pollHandles = new Map();
 
 function initUploadForm() {
   const form = document.getElementById("upload-form");
@@ -122,10 +133,14 @@ function initUploadForm() {
     submitBtn.textContent = "Submitting…";
 
     const sampleId = document.getElementById("sample_id").value;
+    const imageInput = document.getElementById("image");
+    const expressionInput = document.getElementById("expression");
     const formData = new FormData();
     formData.append("sample_id", sampleId);
-    formData.append("image", document.getElementById("image").files[0]);
-    formData.append("expression", document.getElementById("expression").files[0]);
+    formData.append("image", imageInput.files[0]);
+    for (const file of expressionInput.files) {
+      formData.append("expression", file);
+    }
 
     try {
       const response = await fetch("/api/runs", { method: "POST", body: formData });
@@ -133,9 +148,15 @@ function initUploadForm() {
         throw new Error(`${response.status} ${await response.text()}`);
       }
       const { run_id } = await response.json();
-      saveRecentRun(run_id, sampleId);
-      renderRecentRuns();
-      trackRun(run_id);
+      upsertRunRecord(run_id, sampleId, "pending");
+      trackRun(run_id, sampleId, { prepend: true, autoExpand: true });
+
+      // Clear the file pickers so a second submit right away doesn't
+      // accidentally resend the same files for a different sample.
+      imageInput.value = "";
+      expressionInput.value = "";
+      imageInput.dispatchEvent(new Event("change"));
+      expressionInput.dispatchEvent(new Event("change"));
     } catch (err) {
       errorBanner.textContent = `Upload failed: ${err.message}`;
       errorBanner.hidden = false;
@@ -145,81 +166,161 @@ function initUploadForm() {
     }
   });
 
-  document.getElementById("new-run-btn").addEventListener("click", () => {
-    clearInterval(pollHandle);
-    document.getElementById("upload-card").hidden = false;
-    document.getElementById("new-run-btn").hidden = true;
-    document.getElementById("status-card").hidden = true;
-    document.getElementById("report-card").hidden = true;
-    document.getElementById("claims-card").hidden = true;
-    setActiveChip(null);
-  });
-
   document.getElementById("load-run-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const input = document.getElementById("load-run-id");
     const runId = input.value.trim();
-    if (runId) trackRun(runId);
+    if (runId) trackRun(runId, null, { prepend: true, autoExpand: true });
     input.value = "";
+  });
+
+  document.getElementById("refresh-runs-btn").addEventListener("click", () => {
+    for (const run of getRecentRuns()) pollRunOnce(run.run_id);
   });
 }
 
-function trackRun(runId) {
-  clearInterval(pollHandle);
-  document.getElementById("upload-card").hidden = true;
-  document.getElementById("new-run-btn").hidden = false;
-  document.getElementById("report-card").hidden = true;
-  document.getElementById("claims-card").hidden = true;
-  setActiveChip(runId);
-  setStepper("pending");
-  setStatus("pending", "Submitted. Waiting for the pipeline…", true);
-  document.getElementById("status-card").hidden = false;
-
-  pollRun(runId);
-  pollHandle = setInterval(() => pollRun(runId), 4000);
+/* Render every run this browser knows about from its cached last-known
+ * status (instant, no network) on page load. Still-active runs start
+ * polling immediately, which corrects any stale cached status right
+ * away; finished ones stay as-is until refreshed or expanded, so a
+ * reload with a long history doesn't fire a burst of needless requests. */
+function hydrateRunsList() {
+  for (const run of getRecentRuns()) {
+    const entry = ensureRunEntry(run.run_id, run.sample_id, { prepend: false });
+    const status = run.status || "pending";
+    updateRunEntryStatus(entry, status, statusMessage(status), ACTIVE_STATUSES.includes(status));
+    if (ACTIVE_STATUSES.includes(status)) startPolling(run.run_id);
+  }
 }
 
-async function pollRun(runId) {
+function statusMessage(status) {
+  if (ACTIVE_STATUSES.includes(status)) {
+    return `Status: ${status}… (real CPU inference can take several minutes)`;
+  }
+  if (status === "failed") return "Run failed — expand for details.";
+  return `Done — verdict: ${status}`;
+}
+
+function trackRun(runId, sampleIdHint, { prepend = true, autoExpand = false } = {}) {
+  const entry = ensureRunEntry(runId, sampleIdHint, { prepend });
+  if (autoExpand) entry.querySelector(".run-entry-details").classList.add("open");
+  startPolling(runId);
+}
+
+function startPolling(runId) {
+  if (pollHandles.has(runId)) return;
+  pollHandles.set(runId, null); // reserve immediately so a second call can't race in
+  const tick = async () => {
+    const run = await pollRunOnce(runId);
+    if (!run || !ACTIVE_STATUSES.includes(run.status)) stopPolling(runId);
+  };
+  tick();
+  pollHandles.set(runId, setInterval(tick, 4000));
+}
+
+function stopPolling(runId) {
+  const handle = pollHandles.get(runId);
+  if (handle) clearInterval(handle);
+  pollHandles.delete(runId);
+}
+
+async function pollRunOnce(runId) {
+  const entry = ensureRunEntry(runId);
   let response;
   try {
     response = await fetch(`/api/runs/${runId}`);
   } catch (err) {
-    setStatus("failed", `Network error: ${err.message}`, false);
-    clearInterval(pollHandle);
-    return;
+    updateRunEntryStatus(entry, "failed", `Network error: ${err.message}`, false);
+    return null;
   }
   if (!response.ok) {
-    setStatus("failed", `Could not fetch run status: ${response.status}`, false);
-    clearInterval(pollHandle);
-    return;
+    const message = response.status === 404 ? "Run not found" : `Could not fetch run status: ${response.status}`;
+    updateRunEntryStatus(entry, "failed", message, false);
+    return null;
   }
   const run = await response.json();
+  entry.querySelector(".run-entry-sample").textContent = run.sample_id;
 
-  if (run.status === "pending" || run.status === "running") {
-    setStepper(run.status);
-    setStatus(run.status, `Status: ${run.status}… (real CPU inference can take several minutes)`, true);
-    return;
-  }
-  clearInterval(pollHandle);
-
-  if (run.status === "failed") {
-    setStepper("failed");
-    setStatus("failed", `Run failed: ${run.error}`, false);
-    return;
+  if (ACTIVE_STATUSES.includes(run.status)) {
+    upsertRunRecord(run.run_id, run.sample_id, run.status);
+    updateRunEntryStatus(entry, run.status, statusMessage(run.status), true);
+    return run;
   }
 
-  setStepper("done");
-  setStatus(run.verdict || "done", `Done — verdict: ${run.verdict}`, false);
-  renderReport(run);
-  renderClaims(run);
+  const badgeClass = run.status === "failed" ? "failed" : run.verdict || "done";
+  upsertRunRecord(run.run_id, run.sample_id, badgeClass);
+  updateRunEntryStatus(
+    entry,
+    badgeClass,
+    run.status === "failed" ? `Run failed: ${run.error}` : `Done — verdict: ${run.verdict}`,
+    false
+  );
+  if (run.status !== "failed") {
+    renderReport(entry, run);
+    renderClaims(entry, run);
+  }
+  return run;
 }
 
-function setStepper(status) {
+function ensureRunEntry(runId, sampleIdHint, { prepend = true } = {}) {
+  const existing = document.querySelector(`.run-entry[data-run-id="${CSS.escape(runId)}"]`);
+  if (existing) return existing;
+
+  document.getElementById("runs-empty-hint")?.remove();
+
+  const entry = document.createElement("div");
+  entry.className = "run-entry";
+  entry.dataset.runId = runId;
+  entry.innerHTML = `
+    <div class="run-entry-head">
+      <div class="run-entry-title">
+        <strong class="run-entry-sample">${escapeHtml(sampleIdHint || "(loading…)")}</strong>
+        <span class="mono">${escapeHtml(runId.slice(0, 8))}</span>
+      </div>
+      <div class="run-entry-actions">
+        <span class="badge" data-role="badge"></span>
+        <span class="spinner" data-role="spinner" hidden aria-hidden="true"></span>
+        <button type="button" class="ghost small toggle-details">Details</button>
+      </div>
+    </div>
+    <div class="run-entry-details">
+      <div class="stepper">
+        <div class="step" data-step="pending">Submitted</div>
+        <div class="step" data-step="running">Running</div>
+        <div class="step" data-step="done">Complete</div>
+      </div>
+      <div class="status-line" aria-live="polite" aria-atomic="true">
+        <span data-role="status-text"></span>
+      </div>
+      <div class="report-wrap" hidden><iframe class="report-frame"></iframe></div>
+      <div class="claims-wrap" hidden>
+        <h3>Claims — submit a correction</h3>
+        <p class="subtitle">Corrections are captured as structured training pairs for the next fine-tune cycle.</p>
+        <div class="claims-grid"></div>
+      </div>
+    </div>
+  `;
+
+  const details = entry.querySelector(".run-entry-details");
+  entry.querySelector(".toggle-details").addEventListener("click", async () => {
+    details.classList.toggle("open");
+    if (details.classList.contains("open") && !entry.dataset.loaded) {
+      entry.dataset.loaded = "true";
+      await pollRunOnce(runId);
+    }
+  });
+
+  const list = document.getElementById("runs-list");
+  if (prepend) list.prepend(entry); else list.appendChild(entry);
+  return entry;
+}
+
+function setStepperFor(entry, status) {
   const order = ["pending", "running", "done"];
   const failed = status === "failed";
-  const activeIndex = failed ? order.length : order.indexOf(status);
+  const activeIndex = failed ? order.length : order.indexOf(ACTIVE_STATUSES.includes(status) ? status : "done");
 
-  document.querySelectorAll("#stepper .step").forEach((el, i) => {
+  entry.querySelectorAll(".step").forEach((el, i) => {
     el.classList.remove("active", "complete", "failed");
     if (failed && i === order.length - 1) {
       el.classList.add("failed");
@@ -231,22 +332,23 @@ function setStepper(status) {
   });
 }
 
-function setStatus(badgeClass, text, showSpinner) {
-  const badge = document.getElementById("status-badge");
+function updateRunEntryStatus(entry, badgeClass, text, showSpinner) {
+  const badge = entry.querySelector('[data-role="badge"]');
   badge.className = `badge ${badgeClass}`;
   badge.textContent = badgeClass;
-  document.getElementById("status-text").textContent = text;
-  document.getElementById("status-spinner").hidden = !showSpinner;
+  entry.querySelector('[data-role="status-text"]').textContent = text;
+  entry.querySelector('[data-role="spinner"]').hidden = !showSpinner;
+  setStepperFor(entry, badgeClass);
 }
 
-function renderReport(run) {
-  const card = document.getElementById("report-card");
+function renderReport(entry, run) {
+  const wrap = entry.querySelector(".report-wrap");
   if (!run.report_html) {
-    card.hidden = true;
+    wrap.hidden = true;
     return;
   }
-  card.hidden = false;
-  document.getElementById("report-frame").srcdoc = run.report_html;
+  wrap.hidden = false;
+  wrap.querySelector("iframe").srcdoc = run.report_html;
 }
 
 function confidenceClass(confidence) {
@@ -255,16 +357,16 @@ function confidenceClass(confidence) {
   return "low";
 }
 
-function renderClaims(run) {
-  const card = document.getElementById("claims-card");
-  const grid = document.getElementById("claims-grid");
+function renderClaims(entry, run) {
+  const wrap = entry.querySelector(".claims-wrap");
+  const grid = entry.querySelector(".claims-grid");
   grid.innerHTML = "";
 
   if (!run.claims || run.claims.length === 0) {
-    card.hidden = true;
+    wrap.hidden = true;
     return;
   }
-  card.hidden = false;
+  wrap.hidden = false;
 
   for (const claim of run.claims) {
     grid.appendChild(buildClaimCard(run, claim));
@@ -351,37 +453,6 @@ async function submitCorrection(run, claim, box) {
   } catch (err) {
     resultEl.className = "correction-result err";
     resultEl.textContent = `error: ${err.message}`;
-  }
-}
-
-/* ---------------------------------------------------------------------
- * Recent runs
- * ------------------------------------------------------------------- */
-function setActiveChip(runId) {
-  document.querySelectorAll("#recent-runs-chips .chip").forEach((chip) => {
-    chip.setAttribute("aria-current", String(chip.dataset.runId === runId));
-  });
-}
-
-function renderRecentRuns() {
-  const container = document.getElementById("recent-runs-chips");
-  const runs = getRecentRuns();
-  container.innerHTML = "";
-
-  if (runs.length === 0) {
-    container.innerHTML = '<span class="empty-hint">No runs yet on this browser.</span>';
-    return;
-  }
-
-  for (const run of runs) {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "chip";
-    chip.dataset.runId = run.run_id;
-    chip.setAttribute("aria-current", "false");
-    chip.innerHTML = `<span class="dot"></span> ${escapeHtml(run.sample_id)} <span class="mono">${run.run_id.slice(0, 8)}</span>`;
-    chip.addEventListener("click", () => trackRun(run.run_id));
-    container.appendChild(chip);
   }
 }
 
@@ -539,7 +610,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initDropzone("image-drop", "image");
   initDropzone("expression-drop", "expression");
   initUploadForm();
-  renderRecentRuns();
+  hydrateRunsList();
 
   document.getElementById("refresh-escalations").addEventListener("click", loadEscalations);
   document.getElementById("refresh-corrections").addEventListener("click", loadCorrections);

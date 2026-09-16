@@ -8,7 +8,7 @@ the checkpointer at any point, not only the final result.
 from __future__ import annotations
 
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 from uuid import UUID
 
 from nexus_agent.shared.schemas import AgentName, AnalyticalGoal, MessageEnvelope, Verdict
@@ -40,6 +40,11 @@ class RunState(TypedDict, total=False):
     # it detects it's retrying after a Critic veto (see agents/common.py's
     # is_retry_after_veto), so the retry isn't artificially suppressed again.
     stub_confidence_override: dict[AgentName, float] | None
+    # Set by `qc_node`, consumed by `graph/build.py::_qc_router` -- QC is a
+    # raw-data quality gate, not a biological-claim producer, so it never
+    # routes through Critic (Art. III §2 only binds claims Critic reviews);
+    # a "fail" verdict routes straight to human_review instead.
+    qc_verdict: Literal["pass", "flag", "fail"] | None
     # Phase 4 (Art. VI §2-3): the confidence-weighted report `_report_node`
     # renders on the `pass` path, once real Analyst claims + XAI evidence
     # bundles exist. `None` on the stub path (unchanged Phase 0-3 behavior)

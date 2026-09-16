@@ -304,27 +304,31 @@ button.small { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
 }
 .error-banner[hidden] { display: none; }
 
-/* ---- recent runs ---- */
-.chip-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.chip {
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  border-radius: 999px;
-  padding: 0.35rem 0.75rem;
-  font-size: 0.8rem;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-.chip:hover { border-color: var(--primary); }
-.chip[aria-current="true"] { border-color: var(--primary); background: var(--primary-bg); color: var(--primary); }
-.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); }
 .empty-hint { color: var(--text-muted); font-size: 0.85rem; }
 
-.inline-form { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+.inline-form { display: flex; gap: 0.5rem; margin: 0 0 0.9rem; }
 .inline-form input { flex: 1; padding: 0.45rem 0.6rem; border: 1px solid var(--border); border-radius: 8px; font-size: 0.85rem; background: var(--surface); color: var(--text); }
+
+/* ---- runs list: each tracked run (submitted or loaded by ID) gets its
+   own independently-polled card, so several can be running at once ---- */
+.runs-list { display: flex; flex-direction: column; gap: 0.75rem; }
+
+.run-entry { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.run-entry-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  flex-wrap: wrap;
+}
+.run-entry-title { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.run-entry-title strong { font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-entry-actions { display: flex; align-items: center; gap: 0.5rem; }
+
+.run-entry-details { padding: 0 0.9rem 0.9rem; display: none; flex-direction: column; gap: 0.9rem; }
+.run-entry-details.open { display: flex; }
+.run-entry-details h3 { margin: 0 0 0.2rem; font-size: 0.92rem; font-weight: 700; }
 
 /* ---- status ---- */
 .stepper { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.9rem; }
@@ -368,7 +372,7 @@ button.small { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-iframe#report-frame {
+.report-frame {
   width: 100%;
   height: 65vh;
   border: 1px solid var(--border);

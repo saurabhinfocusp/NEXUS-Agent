@@ -101,6 +101,33 @@ regardless of how well it performs on benchmarks.
   generates the attribution evidence (Grad-CAM++, SHAP) attached to every
   claim before it reaches the report.
 
+Three additional specialist agents have been added under Section 4's
+extensibility clause below, extending the roster beyond this minimum of
+four:
+
+- **QC Agent** — owns raw-data quality gating, ahead of Vision/Analyst.
+  Computes expression-side QC metrics (total counts, genes-per-cell,
+  mitochondrial fraction) and image-side QC (focus/blur, tissue-coverage
+  fraction) and produces a pass/flag/fail verdict. Because it gates whether
+  analysis proceeds at all rather than delivering a biological claim, its
+  fail verdict may escalate directly to human review without first passing
+  through the Critic/XAI Agent — this does not conflict with Section 2
+  below, which governs *biological claims*, not upstream data-quality gates.
+- **Spatial Transcriptomics Agent** — owns spatial-neighborhood biology
+  beyond the k-NN graph Analyst builds purely for fusion-attention masking:
+  neighborhood enrichment, co-occurrence, and spatial autocorrelation
+  (Moran's I) over the fused representation, producing niche/domain claims.
+  Runs after Analyst; its output is a biological claim and is therefore
+  reviewed by the Critic/XAI Agent like any other, per Section 2.
+- **Biology (Enrichment) Agent** — owns gene-set and pathway-level
+  interpretation of Analyst's/the Spatial Agent's cell-type and marker
+  findings: gene-set enrichment against curated pathway/ontology databases,
+  protein-interaction network support, and literature grounding (Article
+  VI, RAG). Runs after the Spatial Transcriptomics Agent (or directly after
+  Analyst, if spatial analysis was not requested); its output is a
+  biological claim and is therefore reviewed by the Critic/XAI Agent, per
+  Section 2.
+
 **Section 2. Separation of authority.** No agent may bypass the Critic/XAI
 agent to deliver a final biological claim directly to the user. No agent may
 silently discard a low-confidence result; it must be surfaced, flagged, or
@@ -114,7 +141,9 @@ decisions that affect the final report.
 
 **Section 4. Extensibility.** Additional specialist agents (e.g., a Statistics
 agent, a Reporting agent) may be added without amending this Constitution, so
-long as they respect Sections 1–3 and the Core Principles of Article II.
+long as they respect Sections 1–3 and the Core Principles of Article II. The
+QC, Spatial Transcriptomics, and Biology (Enrichment) Agents described in
+Section 1 above are the first exercise of this clause.
 
 ---
 
@@ -379,7 +408,39 @@ metrics stack; veto rate and correction-rate trend are first-class
 dashboards, not log-mining exercises, because Article VII, Section 4 requires
 them to be measured, not estimated.
 
-**Section 9. Versioning.**
+**Section 10. Extension Specialist Stacks (QC, Spatial Transcriptomics,
+Biology/Enrichment).**
+These three agents (Article III, Section 1) are Python-native by design —
+they do not shell out to external CLI pipelines or an R runtime, consistent
+with the project's ingestion standards (Article V, Section 3). Tools named
+in early planning that require a FASTQ→counts execution pipeline (FastQC,
+STARsolo, Cell Ranger) or an R/Bioconductor runtime (Seurat, Giotto) are
+deliberately out of scope: this project never ingests raw FASTQ, and
+`.rds` objects are already rejected at upload for the same no-R-interop
+reason. Where a named tool's *function* is still required, it is met with
+an equivalent Python-native library: Scanpy (`calculate_qc_metrics`) and
+scikit-image (focus/blur, tissue-coverage) for QC; Squidpy
+(`nhood_enrichment`, `co_occurrence`, `spatial_autocorr`) and SpatialData
+(already Article XII, Section 1's canonical container) for spatial
+transcriptomics; `gseapy` (covering Enrichr, KEGG, Reactome, and MSigDB
+Hallmark gene-set libraries), g:Profiler, and STRING's REST API for
+enrichment, alongside the same RAG literature layer used elsewhere in
+Article VI rather than a duplicate implementation.
+
+**Section 11. Extension Specialist Output Contracts.**
+QC Agent output per sample: `{qc_verdict: pass|flag|fail, expression_metrics,
+image_metrics, qc_plot_uri}`. A `fail` verdict routes directly to human
+review (Article VII, Section 3) without a Critic/XAI review, per Article
+III's QC Agent description. Spatial Transcriptomics Agent output per claim:
+`{cell_id, niche_label, supporting_statistic, confidence}` — reviewed by
+Critic/XAI like any Analyst claim. Biology (Enrichment) Agent output per
+claim: `{term_id, gene_set, source_db, p_value or FDR, confidence}` —
+likewise reviewed by Critic/XAI; its evidence bundle substitutes the
+literature-citation artifact of Article VI, Section 1(3) for the
+image/gene-attribution artifacts of Section 1(1)–(2), which do not apply to
+a pathway-level claim.
+
+**Section 12. Versioning.**
 Every model, prompt template, and threshold named in this Article carries an
 independent semantic version, recorded in each run's provenance entry
 (Article III, Section 3) as `{component, version}`. A change to any
@@ -395,6 +456,7 @@ implementation detail.
 |---|---|---|---|
 | 1.0 | 2026-08-24 | Initial constitution drafted from the NEXUS-Agent One-Pager | Saurabh Gupta, Infocusp |
 | 1.1 | 2026-08-24 | Added Article XII (Technical Reference Specification), giving Articles III–VIII concrete data formats, model parameters, message schemas, XAI implementation, fine-tuning rules, and validation thresholds. Affects Core Principles 1, 2, 5, 6 (Article II). | Saurabh Gupta, Infocusp |
+| 1.2 | 2026-09-16 | Recorded the first exercise of Article III, Section 4's extensibility clause: added the QC, Spatial Transcriptomics, and Biology (Enrichment) Agents to Article III, Section 1, and their technical stacks/output contracts as Article XII, Sections 10–11. Not itself an amendment to Sections 1–3 or Article II (Section 4 pre-authorizes this), but recorded here for traceability since it changes the documented agent roster. Affects Core Principles 1 and 6 (Article II) — new claim types (niche/pathway) now require the same evidence/traceability standard as existing claims. | Saurabh Gupta, Infocusp |
 
 ---
 

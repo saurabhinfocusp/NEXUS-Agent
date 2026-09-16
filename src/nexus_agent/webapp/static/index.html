@@ -34,11 +34,20 @@
     <div class="card" id="upload-card">
       <div class="card-head">
         <h2>Submit a sample</h2>
-        <button type="button" class="ghost small" id="new-run-btn" hidden>+ New run</button>
       </div>
-      <p class="subtitle">Upload a histology/multiplex image and its matching spatial expression file
-        (<code>.h5ad</code>). Real CellPose+VGG16 inference can take several minutes on CPU — this
-        page polls in the background, no need to keep it in the foreground.</p>
+      <p class="subtitle">Submitting doesn't block on a previous run — start as many as you like;
+        each is tracked independently below. Upload a histology/multiplex image and its matching spatial expression
+        data — <code>.h5ad</code>, <code>.loom</code>, a 10x Genomics <code>.h5</code> feature-barcode
+        matrix, a zipped/tarred 10x mtx bundle, or <code>matrix.mtx</code> + <code>barcodes.tsv</code>
+        + <code>features.tsv</code> selected together (multi-select, no zipping needed). Either file
+        can also be plain-gzipped (e.g. <code>image.tiff.gz</code>, <code>expression.h5ad.gz</code>) —
+        it's decompressed automatically. Seurat/SingleCellExperiment <code>.rds</code> files aren't
+        read directly — convert to <code>.h5ad</code> first (e.g. <code>SeuratDisk</code> or
+        <code>sceasy::convertFormat</code>). A 10x Genomics Loupe <code>.cloupe</code> file can't be
+        read at all (no reader exists outside Loupe Browser itself) — upload the
+        <code>*_feature_bc_matrix.h5</code> or mtx bundle it was generated from instead. Real
+        CellPose+VGG16 inference can take several minutes on
+        CPU — this page polls in the background, no need to keep it in the foreground.</p>
 
       <form id="upload-form">
         <div class="field">
@@ -48,14 +57,14 @@
 
         <div class="form-row">
           <div class="field">
-            <span id="image-label" class="field-label">Image file (PNG / JPEG / TIFF)</span>
-            <input type="file" id="image" name="image" class="dropzone-input visually-hidden" accept=".png,.jpg,.jpeg,.tif,.tiff" required aria-describedby="image-label">
+            <span id="image-label" class="field-label">Image file (PNG / JPEG / TIFF, optionally .gz)</span>
+            <input type="file" id="image" name="image" class="dropzone-input visually-hidden" accept=".png,.jpg,.jpeg,.tif,.tiff,.gz" required aria-describedby="image-label">
             <label class="dropzone" id="image-drop" for="image">Click or drop image file here</label>
           </div>
           <div class="field">
-            <span id="expression-label" class="field-label">Expression file (.h5ad)</span>
-            <input type="file" id="expression" name="expression" class="dropzone-input visually-hidden" accept=".h5ad" required aria-describedby="expression-label">
-            <label class="dropzone" id="expression-drop" for="expression">Click or drop .h5ad file here</label>
+            <span id="expression-label" class="field-label">Expression file(s) — single file, or select matrix.mtx + barcodes.tsv + features.tsv together</span>
+            <input type="file" id="expression" name="expression" class="dropzone-input visually-hidden" accept=".h5ad,.loom,.h5,.zip,.tar,.tar.gz,.tgz,.mtx,.gz,.tsv" multiple required aria-describedby="expression-label">
+            <label class="dropzone" id="expression-drop" for="expression">Click or drop expression file(s) here</label>
           </div>
         </div>
 
@@ -64,41 +73,19 @@
       </form>
     </div>
 
-    <div class="card" id="recent-runs-card">
-      <h2>Recent runs</h2>
-      <div class="chip-row" id="recent-runs-chips">
-        <span class="empty-hint">No runs yet on this browser.</span>
+    <div class="card" id="runs-card">
+      <div class="card-head">
+        <h2>Your runs</h2>
+        <button type="button" class="ghost small" id="refresh-runs-btn">Refresh all</button>
       </div>
       <form class="inline-form" id="load-run-form">
         <label for="load-run-id" class="visually-hidden">Run ID</label>
-        <input type="text" id="load-run-id" placeholder="Or paste a run ID to load it…">
-        <button type="submit" class="ghost small">Load</button>
+        <input type="text" id="load-run-id" placeholder="Track a run by ID (e.g. from another browser)…">
+        <button type="submit" class="ghost small">Track</button>
       </form>
-    </div>
-
-    <div class="card" id="status-card" hidden>
-      <h2>Run status</h2>
-      <div class="stepper" id="stepper">
-        <div class="step" data-step="pending">Submitted</div>
-        <div class="step" data-step="running">Running</div>
-        <div class="step" data-step="done">Complete</div>
+      <div id="runs-list">
+        <span class="empty-hint" id="runs-empty-hint">No runs yet on this browser.</span>
       </div>
-      <div class="status-line" aria-live="polite" aria-atomic="true">
-        <span class="badge" id="status-badge"></span>
-        <span id="status-text"></span>
-        <span class="spinner" id="status-spinner" hidden aria-hidden="true"></span>
-      </div>
-    </div>
-
-    <div class="card" id="report-card" hidden>
-      <h2>Report</h2>
-      <iframe id="report-frame"></iframe>
-    </div>
-
-    <div class="card" id="claims-card" hidden>
-      <h2>Claims — submit a correction</h2>
-      <p class="subtitle">Corrections are captured as structured training pairs for the next fine-tune cycle.</p>
-      <div class="claims-grid" id="claims-grid"></div>
     </div>
 
   </section>

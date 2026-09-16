@@ -71,7 +71,13 @@ class ReportClaimInput(BaseModel):
 
 class ClaimReportEntry(BaseModel):
     claim_id: str
-    claim_type: Literal["cell_type_call", "spatial_domain_definition", "biomarker_association"]
+    claim_type: Literal[
+        "cell_type_call",
+        "spatial_domain_definition",
+        "biomarker_association",
+        "niche_enrichment",
+        "pathway_enrichment",
+    ]
     value: str | None
     confidence: float
     weight_tier: Literal["high", "medium", "low"]

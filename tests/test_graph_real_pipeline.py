@@ -124,3 +124,51 @@ def test_expression_only_stays_provisional():
     claims = [AnalystClaim.model_validate(c) for c in analyst_message.payload["claims"]]
     assert claims
     assert all(claim.provisional for claim in claims)  # single modality -> provisional (Art. V §1)
+
+
+def test_real_analyst_spatial_biology_chain_end_to_end():
+    """Exercises Analyst -> Spatial -> Biology -> Critic end to end with
+    both opt-in flags set (Art. III §4 specialist additions): real Squidpy
+    niche/co-occurrence/Moran's I stats on Analyst's own spatial k-NN graph,
+    and real gseapy/g:Profiler/STRING enrichment calls (network-dependent,
+    hence integration-only -- fast unit tests network-mock these instead,
+    see tests/test_biology.py).
+    """
+    run_id = uuid.uuid4()
+    _, expression_uri = _upload_sample(run_id)
+    graph = compile_with_memory()
+
+    result = graph.invoke(
+        _initial_state(
+            run_id,
+            expression_uri=expression_uri,
+            goal=AnalyticalGoal(
+                sample_id="sample-1",
+                modalities=["expression"],
+                run_spatial_analysis=True,
+                run_enrichment_analysis=True,
+            ),
+        ),
+        config={"configurable": {"thread_id": str(run_id)}},
+    )
+
+    from_agents = [m.from_agent for m in result["history"]]
+    assert AgentName.ANALYST in from_agents
+    assert AgentName.SPATIAL in from_agents
+    assert AgentName.BIOLOGY in from_agents
+    assert from_agents.index(AgentName.ANALYST) < from_agents.index(AgentName.SPATIAL) < from_agents.index(
+        AgentName.BIOLOGY
+    )
+    assert result["verdict"] in (Verdict.PASS, Verdict.VETO, Verdict.ESCALATE)
+
+    from nexus_agent.agents.spatial import SpatialClaim
+
+    spatial_message = next(m for m in result["history"] if m.from_agent == AgentName.SPATIAL)
+    spatial_claims = [SpatialClaim.model_validate(c) for c in spatial_message.payload["claims"]]
+    assert spatial_claims
+
+    from nexus_agent.agents.biology import EnrichmentClaim
+
+    biology_message = next(m for m in result["history"] if m.from_agent == AgentName.BIOLOGY)
+    biology_claims = [EnrichmentClaim.model_validate(c) for c in biology_message.payload["claims"]]
+    assert biology_claims

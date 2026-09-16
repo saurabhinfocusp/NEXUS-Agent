@@ -18,4 +18,7 @@ dependencies:
       - --extra-index-url https://download.pytorch.org/whl/cpu
       - torch
       - torchvision
+      # gseapy/gprofiler-official (Biology/Enrichment agent, Art. III §4)
+      # are listed in pyproject.toml's [project.dependencies], not
+      # repeated here -- `-e .[dev]` below already installs them.
       - -e .[dev]

@@ -40,6 +40,10 @@ def _default_verdict(confidence: float) -> Verdict:
 
 
 def _claim_type_for(claim: dict) -> str:
+    if claim.get("niche_label"):
+        return "niche_enrichment"
+    if claim.get("source_db"):
+        return "pathway_enrichment"
     if claim.get("cell_type"):
         return "cell_type_call"
     if claim.get("spatial_domain"):
@@ -255,7 +259,7 @@ def critic_node(state: RunState) -> dict:
             else f"confidence {reviewed.confidence:.2f} below veto threshold {VETO_CONFIDENCE_THRESHOLD}"
         )
 
-    if verdict == Verdict.PASS and reviewed.from_agent == AgentName.ANALYST:
+    if verdict == Verdict.PASS and reviewed.from_agent in {AgentName.ANALYST, AgentName.SPATIAL, AgentName.BIOLOGY}:
         _generate_evidence_bundles(state, reviewed)
 
     envelope = build_envelope(

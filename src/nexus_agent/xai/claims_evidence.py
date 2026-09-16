@@ -32,7 +32,13 @@ class ClaimEvidenceBundle(BaseModel):
     """
 
     claim_id: str
-    claim_type: Literal["cell_type_call", "spatial_domain_definition", "biomarker_association"]
+    claim_type: Literal[
+        "cell_type_call",
+        "spatial_domain_definition",
+        "biomarker_association",
+        "niche_enrichment",
+        "pathway_enrichment",
+    ]
     heatmap_uri: str | None = None
     shap_top_genes: list[dict] | None = None
     citations: list[dict] | None = None

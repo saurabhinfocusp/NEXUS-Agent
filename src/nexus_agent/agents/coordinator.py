@@ -15,25 +15,45 @@ from nexus_agent.shared.schemas import AgentName, AnalyticalGoal
 from nexus_agent.shared.versioning import stamp
 
 
-def plan_subtasks(goal: AnalyticalGoal) -> list[AgentName]:
+def plan_subtasks(
+    goal: AnalyticalGoal,
+    *,
+    image_uri: str | None = None,
+    expression_uri: str | None = None,
+) -> list[AgentName]:
     """Which specialist agents must run, in order, for the given modalities.
 
     Vision owns image-derived evidence, Analyst owns expression ingestion
     and (when both modalities are present) fusion -- so Vision, when it
     runs, always precedes Analyst.
+
+    QC is prepended whenever any real data URI is present -- same real-data
+    gate every other node already checks (`image_uri`/`expression_uri` set),
+    so the Phase 0/1 synthetic-stub path (no URIs) is unaffected and QC
+    needs no opt-in flag. Spatial/Biology are appended after Analyst, each
+    behind its own opt-in `AnalyticalGoal` flag, and are no-ops (never
+    added) unless Analyst is also in the plan -- both consume Analyst's
+    expression-derived output as input.
     """
     modalities = set(goal.modalities)
     plan: list[AgentName] = []
+    if image_uri or expression_uri:
+        plan.append(AgentName.QC)
     if "image" in modalities:
         plan.append(AgentName.VISION)
     if "expression" in modalities:
         plan.append(AgentName.ANALYST)
+    if AgentName.ANALYST in plan:
+        if goal.run_spatial_analysis:
+            plan.append(AgentName.SPATIAL)
+        if goal.run_enrichment_analysis:
+            plan.append(AgentName.BIOLOGY)
     return plan
 
 
 def coordinator_node(state: RunState) -> dict:
     goal = state["goal"]
-    subtask_plan = plan_subtasks(goal)
+    subtask_plan = plan_subtasks(goal, image_uri=state.get("image_uri"), expression_uri=state.get("expression_uri"))
 
     # Retained structured reasoning (Art. IV §2) for a non-trivial decision.
     reasoning = [

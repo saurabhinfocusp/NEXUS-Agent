@@ -69,6 +69,49 @@ def test_genuinely_low_confidence_triggers_real_veto_and_never_reaches_report_un
     assert first_analyst_message.to_agent != AgentName.REPORT
 
 
+def test_spatial_veto_reroutes_to_spatial_then_completes():
+    # Proves the generic `_critic_router` veto-back-to-source path works for
+    # a new specialist (Spatial) without any special-casing in
+    # graph/build.py. Stub path (no expression_uri) so Spatial's confidence
+    # comes from `stub_confidence_override`, exercising Critic's real
+    # threshold logic exactly like the Analyst case above.
+    graph = compile_with_memory()
+    run_id = uuid.uuid4()
+    low_confidence = VETO_CONFIDENCE_THRESHOLD - 0.1
+    goal = AnalyticalGoal(sample_id="sample-1", modalities=["expression"], run_spatial_analysis=True)
+
+    result = graph.invoke(
+        _initial_state(
+            run_id=run_id,
+            goal=goal,
+            stub_confidence_override={AgentName.SPATIAL: low_confidence},
+        ),
+        config=_config(run_id),
+    )
+
+    from_agents = [m.from_agent for m in result["history"]]
+    # coordinator, analyst, spatial(low-confidence), critic(veto),
+    # spatial(retry), critic(pass) -- no QC (no real URI in this stub-path test).
+    assert from_agents == [
+        AgentName.COORDINATOR,
+        AgentName.ANALYST,
+        AgentName.SPATIAL,
+        AgentName.CRITIC,
+        AgentName.SPATIAL,
+        AgentName.CRITIC,
+    ]
+
+    first_spatial_message, first_critic_message = result["history"][2], result["history"][3]
+    assert first_spatial_message.confidence == low_confidence
+    assert first_critic_message.to_agent == AgentName.SPATIAL
+    assert "objection" in first_critic_message.payload
+
+    retry_message = result["history"][4]
+    assert retry_message.confidence > low_confidence
+
+    assert result["verdict"] == Verdict.PASS
+
+
 def test_coordinator_and_critic_payloads_carry_structured_reasoning():
     graph = compile_with_memory()
     run_id = uuid.uuid4()

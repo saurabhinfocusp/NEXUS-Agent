@@ -18,8 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class AgentName(StrEnum):
     COORDINATOR = "coordinator"
+    QC = "qc"
     VISION = "vision"
     ANALYST = "analyst"
+    SPATIAL = "spatial"
+    BIOLOGY = "biology"
     CRITIC = "critic"
     REPORT = "report"
     HUMAN_REVIEW = "human_review"
@@ -59,3 +62,8 @@ class AnalyticalGoal(BaseModel):
 
     sample_id: str
     modalities: list[Modality] = Field(min_length=1)
+    # Opt-in, off by default so existing goals/tests are unaffected. Both
+    # require AgentName.ANALYST already in the plan (expression data is
+    # their input) -- plan_subtasks() no-ops rather than erroring otherwise.
+    run_spatial_analysis: bool = False
+    run_enrichment_analysis: bool = False

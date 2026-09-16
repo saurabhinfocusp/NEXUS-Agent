@@ -43,6 +43,17 @@ dependencies = [
     # by anything else.
     "scikit-image",
     "python-multipart>=0.0.9",
+    # webapp expression-upload format support: anndata's `.loom` reader
+    # needs loompy at call time but doesn't declare it as a hard dependency
+    # itself. 10x Genomics `.h5`/mtx-bundle support needs no new dependency
+    # -- scanpy (already required above) ships `read_10x_h5`/`read_10x_mtx`.
+    "loompy>=3.0",
+    # Biology (Enrichment) agent (Art. III §4): Enrichr/KEGG/Reactome/MSigDB
+    # via gseapy, g:Profiler via gprofiler-official. STRING's interaction
+    # network support uses a plain REST call (`requests`, already an
+    # indirect dependency via other HTTP-using packages) -- no SDK needed.
+    "gseapy>=1.1",
+    "gprofiler-official>=1.0",
 ]
 
 [project.optional-dependencies]

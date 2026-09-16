@@ -48,6 +48,23 @@ from nexus_agent.webapp.uploads import read_expression_upload, read_image_upload
 _STATIC_DIR = Path(__file__).parent / "static"
 _HEATMAP_URI_PATTERN = re.compile(r'src="(s3://[^"]+/heatmap\.npy)"')
 
+
+class _RevalidateStaticFiles(StaticFiles):
+    """`StaticFiles` sets no `Cache-Control` header, so browsers fall back to
+    RFC 7234 heuristic caching -- for `index.html`/`app.js`/`styles.css`,
+    which change often during dev and carry no version/hash in their URL,
+    that can silently serve a stale copy for hours with no request ever
+    reaching the server, not even a conditional one. `no-cache` forces a
+    revalidation (a fast, small `If-None-Match` round trip -- ETag/
+    Last-Modified already do the rest) on every load instead.
+    """
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 app = FastAPI(title="NEXUS-Agent")
 app.mount("/review", review_app)
 
@@ -65,10 +82,22 @@ async def create_pipeline_run(
     background_tasks: BackgroundTasks,
     sample_id: str = Form(...),
     image: UploadFile = File(...),
-    expression: UploadFile = File(...),
+    # A single `.h5ad`/`.loom`/`.h5`/archive, or several loose 10x mtx
+    # bundle components (matrix.mtx + barcodes.tsv + features.tsv)
+    # selected together -- see webapp/uploads.py::read_expression_upload.
+    expression: list[UploadFile] = File(...),
 ) -> dict:
-    image_array = read_image_upload(await image.read())
-    adata = read_expression_upload(await expression.read())
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="image file is missing a filename")
+    if not expression or not all(f.filename for f in expression):
+        raise HTTPException(status_code=400, detail="expression file(s) missing a filename")
+
+    image_array = read_image_upload(await image.read(), image.filename)
+    try:
+        expression_files = [(f.filename, await f.read()) for f in expression]
+        adata = read_expression_upload(expression_files)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     run_id = uuid.uuid4()
     task_id = uuid.uuid4()
@@ -119,7 +148,7 @@ def get_heatmap(uri: str) -> Response:
     return Response(content=buffer.getvalue(), media_type="image/png")
 
 
-app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
+app.mount("/", _RevalidateStaticFiles(directory=_STATIC_DIR, html=True), name="static")
 
 
 __all__ = ["app", "PipelineRun"]

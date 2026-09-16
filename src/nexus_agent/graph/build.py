@@ -1,14 +1,24 @@
-"""Assembles the Coordinator -> Vision -> Analyst -> Critic StateGraph
-(Constitution Art. III, Art. IV, Art. XII §4).
+"""Assembles the Coordinator -> QC -> Vision -> Analyst -> Spatial ->
+Biology -> Critic StateGraph (Constitution Art. III, Art. IV, Art. XII §4).
 
-Two real routing decisions: Coordinator's conditional edge sends the task
-to whichever specialist its subtask plan starts with (Art. III §1), and
-Vision's conditional edge sends it on to Analyst only if Analyst is also in
-the plan, else straight to Critic. Critic's verdict is a conditional edge:
-`pass` -> report node, `veto` -> back to the originating agent's node with
-the objection appended to payload, `escalate` -> human-review node. No edge
-exists from Vision or Analyst directly to a terminal node -- everything
-routes through Critic (Art. III §2).
+Coordinator's conditional edge sends the task to whichever specialist its
+subtask plan starts with (Art. III §1) -- QC when any real data URI is
+present, else straight to Vision/Analyst. QC is a raw-data quality gate,
+not a biological-claim producer (Art. III §4 specialist-agent addition), so
+its own conditional edge either escalates a `fail` verdict directly to
+human_review or continues to Vision/Analyst -- it never routes through
+Critic. Vision's conditional edge sends it on to Analyst only if Analyst is
+also in the plan, else straight to Critic. Analyst's conditional edge
+continues to Spatial and/or Biology (both opt-in Art. III §4 specialist
+additions, `AnalyticalGoal.run_spatial_analysis`/`run_enrichment_analysis`)
+when requested, else straight to Critic; Spatial's own conditional edge
+likewise continues to Biology when requested, else Critic. Unlike QC,
+Spatial and Biology *are* biological-claim producers, so -- like
+Vision/Analyst -- their output always routes through Critic (Art. III §2).
+Critic's verdict is a conditional edge: `pass` -> report node, `veto` ->
+back to the originating agent's node with the objection appended to
+payload, `escalate` -> human-review node. No edge exists from any
+claim-producing specialist directly to a terminal node.
 """
 
 from __future__ import annotations
@@ -22,8 +32,11 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from nexus_agent.agents.analyst import analyst_node
+from nexus_agent.agents.biology import biology_node
 from nexus_agent.agents.coordinator import coordinator_node
 from nexus_agent.agents.critic import critic_node
+from nexus_agent.agents.qc import qc_node
+from nexus_agent.agents.spatial import spatial_node
 from nexus_agent.agents.vision import vision_node
 from nexus_agent.graph.state import RunState
 from nexus_agent.shared.schemas import AgentName, Verdict
@@ -107,8 +120,34 @@ def _coordinator_router(state: RunState) -> str:
     return state["subtask_plan"][0].value
 
 
+def _qc_router(state: RunState) -> str:
+    """QC is a raw-data quality gate, not a biological-claim producer, so a
+    `fail` verdict escalates directly to human_review instead of going
+    through Critic (Art. III §2 only binds claims Critic reviews).
+    """
+    if state.get("qc_verdict") == "fail":
+        return "human_review"
+    return "vision" if AgentName.VISION in state["subtask_plan"] else "analyst"
+
+
 def _vision_router(state: RunState) -> str:
     return "analyst" if AgentName.ANALYST in state["subtask_plan"] else "critic"
+
+
+def _analyst_router(state: RunState) -> str:
+    """Analyst's claims feed Spatial/Biology (both opt-in, Art. III §4
+    specialist additions) when requested, else go straight to Critic --
+    replaces the old static `analyst -> critic` edge.
+    """
+    if AgentName.SPATIAL in state["subtask_plan"]:
+        return "spatial"
+    if AgentName.BIOLOGY in state["subtask_plan"]:
+        return "biology"
+    return "critic"
+
+
+def _spatial_router(state: RunState) -> str:
+    return "biology" if AgentName.BIOLOGY in state["subtask_plan"] else "critic"
 
 
 def _critic_router(state: RunState) -> str:
@@ -169,20 +208,40 @@ def _with_message_logging(node_fn):
 def build_graph() -> StateGraph:
     graph = StateGraph(RunState)
     graph.add_node("coordinator", _with_message_logging(coordinator_node))
+    graph.add_node("qc", _with_message_logging(qc_node))
     graph.add_node("vision", _with_message_logging(vision_node))
     graph.add_node("analyst", _with_message_logging(analyst_node))
+    graph.add_node("spatial", _with_message_logging(spatial_node))
+    graph.add_node("biology", _with_message_logging(biology_node))
     graph.add_node("critic", _with_message_logging(critic_node))
     graph.add_node("report", _report_node)
     graph.add_node("human_review", _human_review_node)
 
     graph.set_entry_point("coordinator")
-    graph.add_conditional_edges("coordinator", _coordinator_router, {"vision": "vision", "analyst": "analyst"})
+    graph.add_conditional_edges(
+        "coordinator", _coordinator_router, {"qc": "qc", "vision": "vision", "analyst": "analyst"}
+    )
+    graph.add_conditional_edges(
+        "qc", _qc_router, {"human_review": "human_review", "vision": "vision", "analyst": "analyst"}
+    )
     graph.add_conditional_edges("vision", _vision_router, {"analyst": "analyst", "critic": "critic"})
-    graph.add_edge("analyst", "critic")
+    graph.add_conditional_edges(
+        "analyst", _analyst_router, {"spatial": "spatial", "biology": "biology", "critic": "critic"}
+    )
+    graph.add_conditional_edges("spatial", _spatial_router, {"biology": "biology", "critic": "critic"})
+    graph.add_edge("biology", "critic")
     graph.add_conditional_edges(
         "critic",
         _critic_router,
-        {"report": "report", "human_review": "human_review", "vision": "vision", "analyst": "analyst"},
+        {
+            "report": "report",
+            "human_review": "human_review",
+            "qc": "qc",
+            "vision": "vision",
+            "analyst": "analyst",
+            "spatial": "spatial",
+            "biology": "biology",
+        },
     )
     graph.add_edge("report", END)
     graph.add_edge("human_review", END)

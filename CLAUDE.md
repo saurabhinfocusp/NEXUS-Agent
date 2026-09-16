@@ -51,6 +51,14 @@ There is no CLI and no lint/format tooling configured — the graph is
 invoked directly from Python (see README.md's "Running a task") or through
 the webapp's HTTP surface.
 
+`--reload`'s graceful shutdown waits for in-flight `BackgroundTasks`
+before restarting -- editing a `.py` file while a real pipeline run is
+executing (`webapp/pipeline_runner.py::run_pipeline_job`, real CPU
+inference, can take many minutes) leaves the dev server unresponsive to
+all requests, including that run's own status polling, until it finishes
+or the process is force-killed. Not a bug, just a real trap when iterating
+on `webapp/` against a real upload instead of the fast synthetic-stub path.
+
 ## Architecture
 
 ### The graph is the source of truth for control flow
@@ -147,6 +155,38 @@ routes in registration order, so mounting `/` earlier would swallow every
 API route defined after it. `review/api.py::get_metrics` lazily imports
 `nexus_agent.metrics.dashboards` and returns 503 if it's not
 importable — that module can legitimately not exist yet.
+
+`webapp/uploads.py::read_expression_upload` takes `list[tuple[filename,
+bytes]]`, not just an `.h5ad` — a single file dispatches on extension
+(`.h5ad`, `.loom`, a 10x `.h5` matrix, or a `.zip`/`.tar`/`.tar.gz`/`.tgz`
+archive, itself falling back from "is it a 10x mtx bundle" to "does it
+just wrap one recognizable file"), while 2+ files are assumed to be a 10x
+mtx bundle's loose components (`matrix.mtx`/`barcodes.tsv`/
+`features.tsv`, each optionally `.gz`). Any single file can also be
+plain-gzipped (`_maybe_gunzip`, applied before the rest of the dispatch).
+`.rds` and `.cloupe` are deliberately rejected with a specific message
+pointing at a real conversion path rather than attempted — see that
+module's docstring before adding a new format.
+
+Same rationale, applied to pipeline *execution* rather than upload
+*format*: the QC and Spatial Transcriptomics agents (`agents/qc.py`,
+`agents/spatial.py`) intentionally do not execute FastQC, STARsolo, Cell
+Ranger, Seurat, or Giotto. FastQC/STARsolo/Cell Ranger are FASTQ→counts
+pipeline tools, and this repo never ingests raw FASTQ (only images and
+count matrices/`.h5ad`); Seurat and Giotto are R packages, and the project
+has the same deliberate no-R-interop stance that already rejects `.rds`
+uploads above. QC and Spatial instead implement the Python-native subset
+with real logic: Scanpy `sc.pp.calculate_qc_metrics` + scikit-image
+Laplacian-variance/Otsu QC in place of FastQC/STARsolo/Cell Ranger's own
+QC output, and Squidpy `nhood_enrichment`/`co_occurrence`/`spatial_autocorr`
+in place of Seurat/Giotto's spatial-domain analysis.
+
+The frontend tracks multiple runs independently, not one at a time:
+`app.js`'s `pollHandles` map holds one `setInterval` per run ID, each
+polling and updating only its own DOM card, and `localStorage` caches
+every run's last-known status (`nexus.recentRuns`) so a reload shows
+history instantly without re-fetching finished runs. Submitting a new run
+never touches another run's polling.
 
 ### Config
 
