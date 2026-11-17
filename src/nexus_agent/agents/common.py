@@ -65,3 +65,22 @@ def resolve_stub_confidence(
         return override, [f"confidence overridden to {override} for testing (stub_confidence_override)"]
 
     return default, ["stub: no real model logic yet"]
+
+
+def latest_message_from(state: RunState, agent: AgentName) -> MessageEnvelope | None:
+    """The most recent message `agent` emitted this run, or None. "Latest"
+    matters after a Critic veto: the agent's first (vetoed) output is still
+    in `history`, and anything reading its claims must not pick that one up.
+    """
+    return next((m for m in reversed(state.get("history") or []) if m.from_agent == agent), None)
+
+
+def evidence_claim_id(agent: AgentName, raw_claim_id: str) -> str:
+    """The id a claim's evidence bundle is stored and fetched under
+    (`xai_evidence.claim_id`). Analyst's ids are used as-is -- the reviewer
+    correction API and `provenance_log` already key on them. Spatial's and
+    Biology's are namespaced by agent: Spatial's per-cell ids can equal
+    Analyst's, and `fetch_evidence_bundle` looks up by `(run_id, claim_id)`
+    alone, so without the prefix one agent's bundle would shadow the other's.
+    """
+    return raw_claim_id if agent == AgentName.ANALYST else f"{agent.value}:{raw_claim_id}"

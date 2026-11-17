@@ -24,6 +24,7 @@ still exercise the fail/flag/pass routing without real data.
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from pydantic import BaseModel
@@ -32,6 +33,8 @@ from nexus_agent.agents.common import build_envelope, resolve_stub_confidence
 from nexus_agent.graph.state import RunState
 from nexus_agent.shared.schemas import AgentName
 from nexus_agent.shared.versioning import stamp
+
+logger = logging.getLogger(__name__)
 
 # New Phase-N engineering values (Article XII does not name QC thresholds),
 # same disclosure convention as agents/critic.py's VETO/ESCALATE thresholds.
@@ -173,6 +176,7 @@ def qc_node(state: RunState) -> dict:
                 f"qc/{state['run_id']}/{state['task_id']}/qc_plot.png", _render_qc_plot(adata)
             )
         except Exception:
+            logger.warning("could not render/upload the QC plot for run %s", state["run_id"], exc_info=True)
             qc_plot_uri = None  # best-effort artifact; never blocks the QC verdict
 
     if image_uri:

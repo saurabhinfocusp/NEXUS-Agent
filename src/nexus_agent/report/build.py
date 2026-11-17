@@ -66,6 +66,10 @@ class ReportClaimInput(BaseModel):
     claim_id: str
     cell_type: str | None = None
     spatial_domain: str | None = None
+    # Spatial (niche) and Biology (pathway enrichment) claims -- same
+    # decoupled-input convention, no import of those agents' claim models.
+    niche_label: str | None = None
+    pathway: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
 
 
@@ -102,6 +106,10 @@ def _tier_for(confidence: float) -> Literal["high", "medium", "low"]:
 
 
 def _claim_type_for(claim: ReportClaimInput) -> str:
+    if claim.niche_label:
+        return "niche_enrichment"
+    if claim.pathway:
+        return "pathway_enrichment"
     if claim.cell_type:
         return "cell_type_call"
     if claim.spatial_domain:
@@ -126,7 +134,7 @@ def render_report(
             ClaimReportEntry(
                 claim_id=claim.claim_id,
                 claim_type=_claim_type_for(claim),
-                value=claim.cell_type or claim.spatial_domain,
+                value=claim.niche_label or claim.pathway or claim.cell_type or claim.spatial_domain,
                 confidence=claim.confidence,
                 weight_tier=_tier_for(claim.confidence),
                 heatmap_uri=evidence.get("heatmap_uri"),

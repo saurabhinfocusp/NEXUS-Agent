@@ -23,6 +23,7 @@ claim-producing specialist directly to a terminal node.
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -33,13 +34,56 @@ from langgraph.graph.state import CompiledStateGraph
 
 from nexus_agent.agents.analyst import analyst_node
 from nexus_agent.agents.biology import biology_node
+from nexus_agent.agents.common import evidence_claim_id, latest_message_from
 from nexus_agent.agents.coordinator import coordinator_node
-from nexus_agent.agents.critic import critic_node
+from nexus_agent.agents.critic import CLAIM_PRODUCERS, critic_node
 from nexus_agent.agents.qc import qc_node
 from nexus_agent.agents.spatial import spatial_node
 from nexus_agent.agents.vision import vision_node
 from nexus_agent.graph.state import RunState
-from nexus_agent.shared.schemas import AgentName, Verdict
+from nexus_agent.shared.schemas import AgentName, MessageEnvelope, Verdict
+
+logger = logging.getLogger(__name__)
+
+
+def collect_report_claims(state: RunState) -> list[dict]:
+    """Every claim the report must render (Art. VI §2): the *latest* claims
+    of each claim-producing agent that ran (Analyst, Spatial, Biology), as
+    `ReportClaimInput` kwargs. "Latest" so a vetoed first attempt's claims
+    never reach the report in place of the retry's; all three agents so
+    Spatial/Biology findings aren't silently dropped. `claim_id` is the same
+    `evidence_claim_id` Critic stored each claim's evidence bundle under.
+    """
+    claims: list[dict] = []
+    for agent in CLAIM_PRODUCERS:
+        message = latest_message_from(state, agent)
+        if message is None:
+            continue
+        for c in message.payload.get("claims", []):
+            claims.append(
+                {
+                    "claim_id": evidence_claim_id(agent, c["cell_id"]),
+                    "cell_type": c.get("cell_type"),
+                    "spatial_domain": c.get("spatial_domain"),
+                    "niche_label": c.get("niche_label"),
+                    "pathway": c.get("pathway"),
+                    "confidence": c["confidence"],
+                }
+            )
+    return claims
+
+
+def escalated_message(state: RunState) -> MessageEnvelope:
+    """The message whose escalation sent the run to `human_review`. Two
+    routes lead there: Critic's `escalate` verdict (Critic's own envelope is
+    last, the output it escalated is the one before it), and QC's `fail`
+    gate, which bypasses Critic entirely -- there QC's report is itself the
+    last message, and `history[-2]` would be Coordinator's plan.
+    """
+    history = state["history"]
+    if history[-1].from_agent == AgentName.CRITIC and len(history) >= 2:
+        return history[-2]
+    return history[-1]
 
 
 def _report_node(state: RunState) -> dict:
@@ -50,8 +94,7 @@ def _report_node(state: RunState) -> dict:
     if not (state.get("image_uri") or state.get("expression_uri")):
         return {}  # Phase 0/1 stub path: unchanged, no-op (no real infra touched)
 
-    analyst_message = next((m for m in state["history"] if m.from_agent == AgentName.ANALYST), None)
-    claims_raw = analyst_message.payload.get("claims", []) if analyst_message else []
+    claims_raw = collect_report_claims(state)
     if not claims_raw:
         return {}
 
@@ -59,21 +102,14 @@ def _report_node(state: RunState) -> dict:
     from nexus_agent.shared.config import settings
     from nexus_agent.xai.claims_evidence import fetch_evidence_bundle
 
-    report_claims = [
-        ReportClaimInput(
-            claim_id=c["cell_id"],
-            cell_type=c.get("cell_type"),
-            spatial_domain=c.get("spatial_domain"),
-            confidence=c["confidence"],
-        )
-        for c in claims_raw
-    ]
+    report_claims = [ReportClaimInput(**c) for c in claims_raw]
 
     evidence_by_claim_id: dict[str, dict] = {}
     for claim in report_claims:
         try:
             bundle = fetch_evidence_bundle(settings.postgres_dsn, state["run_id"], claim.claim_id)
         except Exception:
+            logger.warning("could not fetch evidence bundle for claim %s", claim.claim_id, exc_info=True)
             bundle = None
         if bundle is not None:
             evidence_by_claim_id[claim.claim_id] = {
@@ -98,7 +134,7 @@ def _human_review_node(state: RunState) -> dict:
     if not (state.get("image_uri") or state.get("expression_uri")):
         return {}
 
-    escalated_message = state["history"][-2]  # the message Critic escalated (Art. IV §3)
+    escalated = escalated_message(state)  # Critic's escalation (Art. IV §3) or QC's fail gate
     try:
         from nexus_agent.review.escalation import record_escalation
         from nexus_agent.shared.config import settings
@@ -108,11 +144,12 @@ def _human_review_node(state: RunState) -> dict:
             run_id=state["run_id"],
             task_id=state["task_id"],
             claim_id=None,
-            payload=escalated_message.payload,
-            confidence=escalated_message.confidence,
+            payload=escalated.payload,
+            confidence=escalated.confidence,
         )
     except Exception:
-        pass  # best-effort persistence; never block graph completion on it
+        # best-effort persistence; never block graph completion on it
+        logger.warning("could not record escalation for run %s", state["run_id"], exc_info=True)
     return {}
 
 
@@ -199,7 +236,8 @@ def _with_message_logging(node_fn):
                             ),
                         )
             except Exception:
-                pass  # best-effort dashboard substrate; never block the graph on it
+                # best-effort dashboard substrate; never block the graph on it
+                logger.warning("could not write message_log for run %s", state["run_id"], exc_info=True)
         return result
 
     return wrapped

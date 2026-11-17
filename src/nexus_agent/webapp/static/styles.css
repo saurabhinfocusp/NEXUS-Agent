@@ -360,7 +360,7 @@ button.small { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
 .badge.pending, .badge.running { background: var(--warning-bg); color: var(--warning-text); }
 .badge.done, .badge.pass { background: var(--success-bg); color: var(--success-text); }
 .badge.failed, .badge.veto { background: var(--danger-bg); color: var(--danger-text); }
-.badge.escalate { background: var(--escalate-bg); color: var(--escalate-text); }
+.badge.escalate, .badge.qc_fail { background: var(--escalate-bg); color: var(--escalate-text); }
 .badge.resolved { background: var(--bg); color: var(--text-muted); }
 
 .spinner {

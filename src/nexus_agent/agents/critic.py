@@ -17,15 +17,31 @@ is completely unaffected, exactly as before this phase.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 
-from nexus_agent.agents.common import build_envelope
+from nexus_agent.agents.common import build_envelope, evidence_claim_id, latest_message_from
 from nexus_agent.graph.state import RunState
 from nexus_agent.shared.schemas import AgentName, Verdict
 from nexus_agent.shared.versioning import stamp
 
 VETO_CONFIDENCE_THRESHOLD = 0.4
 ESCALATE_CONFIDENCE_THRESHOLD = 0.15
+
+# How many times Critic will veto the same agent within one run before
+# escalating to human review instead (Art. IV §3: re-routing is error
+# *recovery*, not an unbounded loop). Real-path specialists recompute a
+# deterministic result on retry, so without this cap a veto-band confidence
+# would bounce Critic <-> agent until LangGraph's recursion limit kills the
+# run with an opaque error. New engineering value, not an Article XII number.
+MAX_VETOES_PER_AGENT = 2
+
+# Agents whose output is a list of biological claims Critic must attach
+# evidence to (Art. VI §1) and the report must render (Art. VI §2).
+CLAIM_PRODUCERS = (AgentName.ANALYST, AgentName.SPATIAL, AgentName.BIOLOGY)
+
+logger = logging.getLogger(__name__)
 
 # Phase 4 (Art. XII §5): new engineering value, not an Article XII number.
 CRITIC_XAI_VERSION = "0.1.0"
@@ -51,7 +67,7 @@ def _claim_type_for(claim: dict) -> str:
     return "biomarker_association"
 
 
-def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
+def _generate_evidence_bundles(state: RunState) -> None:
     """Real Art. VI §1 artifact generation: a Grad-CAM++ heatmap (when real
     Vision evidence exists for the cell), a SHAP gene-importance ranking
     (when real expression data AND a Phase 5 promoted classifier both
@@ -65,7 +81,18 @@ def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
     back. Every artifact is generated best-effort inside its own try/except
     -- a failure leaves that artifact absent (and `artifacts_expected` vs.
     `artifacts_present` honestly reflects the gap via
-    `xai/coverage.py::explainability_coverage`), it never crashes the run.
+    `xai/coverage.py::explainability_coverage`), it never crashes the run,
+    but it is logged so the gap is diagnosable.
+
+    Covers the *latest* claims of every claim-producing agent that ran
+    (Analyst, Spatial, Biology), not just the one message Critic happened
+    to review last -- with Spatial/Biology in the plan, the last reviewed
+    message is theirs, and Analyst's claims would otherwise reach the report
+    with no evidence at all. Heatmap/SHAP only apply to Analyst's per-cell
+    claims (the ones that actually used imaging/omics model evidence);
+    Spatial/Biology claims get the literature artifact. Their bundle ids are
+    namespaced (`agents/common.py::evidence_claim_id`) because Spatial's
+    per-cell ids can collide with Analyst's.
     """
     expression_uri = state.get("expression_uri")
     if not expression_uri:
@@ -75,14 +102,18 @@ def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
     from nexus_agent.xai.claims_evidence import ClaimEvidenceBundle, store_evidence_bundle
     from nexus_agent.xai.literature_rag import HashingLiteratureEmbedder, retrieve_citations
 
-    claims = analyst_message.payload.get("claims", [])
-    if not claims:
+    produced: list[tuple[AgentName, dict]] = []
+    for agent in CLAIM_PRODUCERS:
+        message = latest_message_from(state, agent)
+        if message is not None:
+            produced.extend((agent, claim) for claim in message.payload.get("claims", []))
+    if not produced:
         return
 
     image_uri = state.get("image_uri")
     vision_cells: list[dict] = []
     if image_uri and AgentName.VISION in state["subtask_plan"]:
-        vision_message = next((m for m in state["history"] if m.from_agent == AgentName.VISION), None)
+        vision_message = latest_message_from(state, AgentName.VISION)
         if vision_message is not None:
             vision_cells = vision_message.payload.get("cells", [])
     vision_cells_by_id = {c["cell_id"]: c for c in vision_cells}
@@ -93,6 +124,7 @@ def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
 
         adata = get_anndata(expression_uri)
     except Exception:
+        logger.warning("could not load expression data %s for SHAP evidence", expression_uri, exc_info=True)
         adata = None
 
     classifier_head = None
@@ -106,12 +138,14 @@ def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
             clf, refiner, _label_map = load_checkpoint(checkpoint_bytes)
             classifier_head = torch.nn.Sequential(refiner, clf) if refiner is not None else clf
     except Exception:
+        logger.warning("could not load the promoted classifier for SHAP evidence", exc_info=True)
         classifier_head = None
 
     literature_embedder = HashingLiteratureEmbedder()
 
-    for claim in claims:
-        claim_id = claim["cell_id"]
+    for agent, claim in produced:
+        raw_id = claim["cell_id"]
+        claim_id = evidence_claim_id(agent, raw_id)
         artifacts_expected: list[str] = []
         artifacts_present: list[str] = []
         heatmap_uri = None
@@ -120,7 +154,7 @@ def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
         citations = None
         no_literature_retrieved = False
 
-        cell = vision_cells_by_id.get(claim_id)
+        cell = vision_cells_by_id.get(raw_id) if agent == AgentName.ANALYST else None
 
         # 1. Grad-CAM++ heatmap -- only applicable when real Vision evidence
         # exists for this specific cell (Art. VI §1(1): "where imaging
@@ -141,6 +175,7 @@ def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
                 heatmap_array = grad_cam_plusplus(Vgg16Embedder(), patch)
                 artifacts_present.append("heatmap")
             except Exception:
+                logger.warning("Grad-CAM++ heatmap failed for claim %s", claim_id, exc_info=True)
                 heatmap_array = None  # absent, honestly reflected in coverage
 
         # 2. SHAP gene importance -- only applicable when real expression
@@ -154,7 +189,7 @@ def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
                 from nexus_agent.agents.analyst import _fixed_seed_fusion_model
                 from nexus_agent.xai.shap_explain import shap_gene_importance
 
-                cell_index = next(i for i, c in enumerate(vision_cells) if c["cell_id"] == claim_id)
+                cell_index = next(i for i, c in enumerate(vision_cells) if c["cell_id"] == raw_id)
                 expression_matrix = np.asarray(adata.X, dtype=np.float64)
                 target_expression = expression_matrix[cell_index]
 
@@ -185,6 +220,7 @@ def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
                 )
                 artifacts_present.append("shap")
             except Exception:
+                logger.warning("SHAP gene importance failed for claim %s", claim_id, exc_info=True)
                 shap_top_genes = None  # absent, honestly reflected in coverage
 
         # 3. RAG literature citation -- always attempted; the "no supporting
@@ -194,12 +230,20 @@ def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
         artifacts_expected.append("citation")
         try:
             claim_type = _claim_type_for(claim)
-            query_text = f"{claim.get('cell_type') or claim.get('spatial_domain') or claim_type} in spatial biology"
+            subject = (
+                claim.get("cell_type")
+                or claim.get("spatial_domain")
+                or claim.get("pathway")
+                or claim.get("niche_label")
+                or claim_type
+            )
+            query_text = f"{subject} in spatial biology"
             result = retrieve_citations(settings.postgres_dsn, query_text, literature_embedder)
             citations = [c.model_dump(mode="json") for c in result.citations] or None
             no_literature_retrieved = result.no_supporting_literature_retrieved
             artifacts_present.append("citation")
         except Exception:
+            logger.warning("literature retrieval failed for claim %s", claim_id, exc_info=True)
             no_literature_retrieved = True  # honest fallback, but not counted as "present"
 
         bundle = ClaimEvidenceBundle(
@@ -222,13 +266,25 @@ def _generate_evidence_bundles(state: RunState, analyst_message) -> None:
                 heatmap_array=heatmap_array,
             )
         except Exception:
-            pass  # best-effort persistence; a failed store here doesn't block the run
+            # best-effort persistence; a failed store here doesn't block the run
+            logger.warning("could not store evidence bundle for claim %s", claim_id, exc_info=True)
 
 
 def critic_node(state: RunState) -> dict:
     reviewed = state["history"][-1]  # the agent output under review
     forced = state.get("force_verdict")
     verdict = forced or _default_verdict(reviewed.confidence)
+
+    prior_vetoes = sum(
+        1
+        for m in state["history"][:-1]
+        if m.from_agent == AgentName.CRITIC
+        and m.to_agent == reviewed.from_agent
+        and m.payload.get("verdict") == Verdict.VETO.value
+    )
+    veto_cap_hit = not forced and verdict == Verdict.VETO and prior_vetoes >= MAX_VETOES_PER_AGENT
+    if veto_cap_hit:
+        verdict = Verdict.ESCALATE
 
     to_agent = {
         Verdict.PASS: AgentName.REPORT,
@@ -245,6 +301,12 @@ def critic_node(state: RunState) -> dict:
             f"reviewed confidence {reviewed.confidence:.2f} vs. thresholds "
             f"(escalate < {ESCALATE_CONFIDENCE_THRESHOLD}, veto < {VETO_CONFIDENCE_THRESHOLD}) -> {verdict.value}"
         ]
+        if veto_cap_hit:
+            reasoning.append(
+                f"{reviewed.from_agent.value} was already vetoed {prior_vetoes} time(s) this run "
+                f"(cap: {MAX_VETOES_PER_AGENT}) and is still in the veto band; escalating to human "
+                "review instead of re-routing again (Art. IV §3)"
+            )
 
     payload = {
         "component_version": stamp(AgentName.CRITIC).model_dump(mode="json"),
@@ -259,8 +321,8 @@ def critic_node(state: RunState) -> dict:
             else f"confidence {reviewed.confidence:.2f} below veto threshold {VETO_CONFIDENCE_THRESHOLD}"
         )
 
-    if verdict == Verdict.PASS and reviewed.from_agent in {AgentName.ANALYST, AgentName.SPATIAL, AgentName.BIOLOGY}:
-        _generate_evidence_bundles(state, reviewed)
+    if verdict == Verdict.PASS and reviewed.from_agent in CLAIM_PRODUCERS:
+        _generate_evidence_bundles(state)
 
     envelope = build_envelope(
         state,

@@ -198,6 +198,7 @@ function statusMessage(status) {
     return `Status: ${status}… (real CPU inference can take several minutes)`;
   }
   if (status === "failed") return "Run failed — expand for details.";
+  if (status === "qc_fail") return "Rejected by QC — sample sent to human review; no analysis was run.";
   return `Done — verdict: ${status}`;
 }
 
@@ -252,7 +253,11 @@ async function pollRunOnce(runId) {
   updateRunEntryStatus(
     entry,
     badgeClass,
-    run.status === "failed" ? `Run failed: ${run.error}` : `Done — verdict: ${run.verdict}`,
+    run.status === "failed"
+      ? `Run failed: ${run.error}`
+      : run.verdict === "qc_fail"
+        ? "Rejected by QC — sample sent to human review; no analysis was run."
+        : `Done — verdict: ${run.verdict}`,
     false
   );
   if (run.status !== "failed") {
