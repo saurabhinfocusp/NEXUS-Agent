@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from nexus_agent.review.api import app
 from nexus_agent.review.escalation import record_escalation
 from nexus_agent.shared.config import settings
+from tests._learning_db import seeded_learning_rows  # noqa: F401  (fixture)
 
 
 def test_app_routes_exist():
@@ -43,8 +44,9 @@ def client():
 
 
 @pytest.mark.integration
-def test_post_and_get_corrections_round_trip(_require_postgres, client):
+def test_post_and_get_corrections_round_trip(_require_postgres, client, seeded_learning_rows):
     run_id, task_id = str(uuid.uuid4()), str(uuid.uuid4())
+    seeded_learning_rows.run_ids.append(uuid.UUID(run_id))
 
     response = client.post(
         "/corrections",

@@ -16,6 +16,7 @@ from nexus_agent.review.correction import (
     submit_correction,
 )
 from nexus_agent.shared.config import settings
+from tests._learning_db import seeded_learning_rows  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.integration
 
@@ -29,8 +30,9 @@ def _require_postgres():
         pytest.skip(f"Postgres not reachable at {settings.postgres_host}:{settings.postgres_port} ({exc}); run `docker compose up -d`.")
 
 
-def test_submit_and_fetch_correction_round_trip():
+def test_submit_and_fetch_correction_round_trip(seeded_learning_rows):
     run_id, task_id = uuid.uuid4(), uuid.uuid4()
+    seeded_learning_rows.run_ids.append(run_id)
 
     new_id = submit_correction(
         settings.postgres_dsn,
@@ -65,8 +67,9 @@ def test_submit_and_fetch_correction_round_trip():
     assert row.tissue_type == "tonsil"
 
 
-def test_fetch_corrections_filters_by_run_id_and_since():
+def test_fetch_corrections_filters_by_run_id_and_since(seeded_learning_rows):
     other_run_id = uuid.uuid4()
+    seeded_learning_rows.run_ids.append(other_run_id)
     task_id = uuid.uuid4()
 
     submit_correction(

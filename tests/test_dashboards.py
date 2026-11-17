@@ -22,6 +22,7 @@ from nexus_agent.metrics.dashboards import (
     veto_rate,
 )
 from nexus_agent.shared.config import settings
+from tests._isolated_schema import isolated_tables
 
 pytestmark = pytest.mark.integration
 
@@ -57,18 +58,12 @@ def _insert_correction(conn, *, run_id, claim_id, reviewer, created_at):
 
 @pytest.fixture
 def dsn():
-    return settings.postgres_dsn
-
-
-@pytest.fixture(autouse=True)
-def _isolate_tables(dsn):
-    """Each test works with its own run_id/task_id namespace, but since the
-    dashboard queries aggregate across the whole table, clear both tables
-    before each test so hand-computed expectations hold exactly."""
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        conn.execute("DELETE FROM message_log")
-        conn.execute("DELETE FROM correction_log")
-    yield
+    """A DSN on which `message_log`/`correction_log` are empty copies private
+    to this test. The dashboard queries aggregate across the whole table, so
+    hand-computed expectations need tables holding only this test's rows --
+    without deleting the shared dev tables' real history to get them."""
+    with isolated_tables(settings.postgres_dsn, "message_log", "correction_log") as test_dsn:
+        yield test_dsn
 
 
 def test_veto_rate_matches_hand_calculation(dsn):
@@ -201,7 +196,7 @@ def test_confidence_distribution_matches_hand_computed_stats(dsn):
 
 
 def test_prometheus_exposition_contains_expected_metrics_and_does_not_crash_when_empty(dsn):
-    # tables are empty at this point (autouse fixture cleared them).
+    # this test's private tables start empty.
     text = prometheus_exposition(dsn)
     assert "# HELP nexus_veto_rate" in text
     assert "nexus_veto_rate 0.0" in text

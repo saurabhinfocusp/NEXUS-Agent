@@ -58,6 +58,15 @@ CI (`.github/workflows/tests.yml`) runs only the fast suite, on pushes to
 run it locally against `docker compose up -d` before trusting a change to
 anything Postgres/S3/model-backed.
 
+Integration tests share the dev Postgres, and much of the code under test
+reads whole tables (the dashboards, the fine-tune cycle, the
+feedback-value report, RAG retrieval, Analyst's "latest promoted
+checkpoint"). So a test must neither empty a shared table nor leave rows
+behind. Code that aggregates a whole table runs against private copies
+(`tests/_isolated_schema.py::isolated_tables`); a test that writes
+learning-loop rows registers them with `tests/_learning_db.py
+::seeded_learning_rows` so they're deleted afterwards.
+
 `--reload`'s graceful shutdown waits for in-flight `BackgroundTasks`
 before restarting -- editing a `.py` file while a real pipeline run is
 executing (`webapp/pipeline_runner.py::run_pipeline_job`, real CPU

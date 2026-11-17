@@ -20,6 +20,7 @@ from nexus_agent.xai.literature_rag import (
     ingest_corpus,
     retrieve_citations,
 )
+from tests._isolated_schema import isolated_tables
 
 _STARTER_CORPUS_PATH = Path(literature_rag.__file__).parent / "data" / "starter_corpus.json"
 
@@ -63,20 +64,27 @@ def _require_postgres():
         )
 
 
+@pytest.fixture()
+def literature_dsn(_require_postgres):
+    with isolated_tables(settings.postgres_dsn, "literature_chunks") as dsn:
+        yield dsn
+
+
 @pytest.mark.integration
-def test_retrieve_citations_thresholds_correctly(_require_postgres):
+def test_retrieve_citations_thresholds_correctly(_require_postgres, literature_dsn):
+    """Runs against a private, empty `literature_chunks`: the hashing
+    embedder is the one Critic and Biology retrieve with, so its chunks in
+    the shared table are the dev database's real corpus, not test data to
+    clear."""
     entries = json.loads(_STARTER_CORPUS_PATH.read_text())[:5]
     embedder = HashingLiteratureEmbedder()
 
-    with psycopg.connect(settings.postgres_dsn, autocommit=True) as conn:
-        conn.execute("DELETE FROM literature_chunks WHERE embedding_model_version = %s", (embedder.model_version,))
-
-    n_inserted = ingest_corpus(settings.postgres_dsn, embedder, entries=entries)
+    n_inserted = ingest_corpus(literature_dsn, embedder, entries=entries)
     assert n_inserted == 5
 
     # On-topic query (the first ingested entry is about CD3 as a T-cell marker).
     on_topic = retrieve_citations(
-        settings.postgres_dsn,
+        literature_dsn,
         entries[0]["text"],
         embedder,
     )
@@ -86,12 +94,9 @@ def test_retrieve_citations_thresholds_correctly(_require_postgres):
 
     # Deliberately nonsense/off-topic query: no ingested chunk should clear threshold.
     off_topic = retrieve_citations(
-        settings.postgres_dsn,
+        literature_dsn,
         "purple bicycle quantum kazoo festival weather forecast",
         embedder,
     )
     assert off_topic.no_supporting_literature_retrieved is True
     assert off_topic.citations == []
-
-    with psycopg.connect(settings.postgres_dsn, autocommit=True) as conn:
-        conn.execute("DELETE FROM literature_chunks WHERE embedding_model_version = %s", (embedder.model_version,))
