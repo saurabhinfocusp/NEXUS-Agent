@@ -70,8 +70,23 @@ def _prepare_adata(state: RunState, expression_uri: str):
         vision_message = _last_message_from(state, AgentName.VISION)
         if vision_message is not None:
             cells = vision_message.payload.get("cells", [])
-            if cells:
+            if cells and len(cells) == adata.n_obs:
                 adata.obsm["spatial"] = np.array([cell["centroid_xy"] for cell in cells])
+            elif cells:
+                # Same real-world mismatch agents/analyst.py guards against: Vision's
+                # segmented cell count and the expression matrix's own spot/cell count
+                # come from independent modalities and essentially never coincide
+                # without real cross-modal registration (Art. XII §1) -- fail with an
+                # actionable message instead of crashing inside AnnData's own
+                # dimension check on the obsm assignment below.
+                raise ValueError(
+                    f"expression data at {expression_uri!r} has no obsm['spatial'] and its "
+                    f"{adata.n_obs} cell(s)/spot(s) don't match Vision's {len(cells)} "
+                    "segmented cell(s), so per-cell spatial coordinates can't be inferred "
+                    "from Vision's centroids. Use a spatially-resolved expression file "
+                    "that already carries its own obsm['spatial'] (Visium/MERFISH/Xenium), "
+                    "or an image/expression pair with a matching cell count."
+                )
 
     spatial_knn_graph(adata)
     return adata

@@ -36,7 +36,9 @@ def segment_cells(image: np.ndarray, *, model_type: str = "cyto3", diameter: flo
     unified checkpoint, not a standalone cyto3-specific one. Disclosed here
     rather than silently implying a smaller/different model actually runs.
     """
-    model = get_cellpose_model(model_type=model_type, gpu=False)
+    from nexus_agent.shared.config import settings
+
+    model = get_cellpose_model(model_type=model_type, gpu=settings.nexus_device != "cpu")
     masks, _flows, _styles = model.eval(image, diameter=diameter)
     return masks
 

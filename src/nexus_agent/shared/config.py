@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     s3_secret_key: str = "nexus_dev_password"
     s3_bucket: str = "nexus-agent"
 
+    # Torch/CellPose device for Vision's real inference path (Art. XII §2).
+    # Defaults to "cpu" so a plain `environment.yml` install (CPU-only torch
+    # wheels, see that file's comment) always works; set NEXUS_DEVICE=cuda
+    # once a CUDA-enabled torch/torchvision is installed and a GPU is
+    # present. Not validated against `torch.cuda.is_available()` here --
+    # that check happens where the device is actually used, so the error if
+    # it's wrong (no CUDA torch installed, or no GPU) is a real torch/
+    # CellPose error at model-load time, not a silently-ignored setting.
+    nexus_device: str = "cpu"
+
     @property
     def postgres_dsn(self) -> str:
         return (

@@ -97,9 +97,31 @@ def _ingest_and_fuse(state: RunState, expression_uri: str, vision_ran: bool):
     vision_cells = _last_vision_message(state).payload["cells"]  # list[dict], VisionCellRecord.model_dump()
 
     if "spatial" not in adata.obsm:
+        if len(vision_cells) != adata.n_obs:
+            # `fuse()` (analyst/fusion.py) requires vision_cells and adata.obs to be
+            # 1:1 row-aligned and already raises a clear ValueError for this -- but
+            # only once it's reached. Assigning a mismatched-length array straight
+            # into `adata.obsm["spatial"]` fails first, inside AnnData's own
+            # dimension check, with a message that doesn't explain *why* the counts
+            # differ or what to do about it. Two real modalities segmented/measured
+            # independently (CellPose's cell count vs. an expression matrix's
+            # spot/cell count) essentially never match by coincidence -- this isn't
+            # a corrupt upload, it's missing cross-modal registration (Art. XII §1).
+            raise ValueError(
+                f"expression data at {expression_uri!r} has no obsm['spatial'] and its "
+                f"{adata.n_obs} cell(s)/spot(s) don't match Vision's {len(vision_cells)} "
+                "segmented cell(s), so per-cell spatial coordinates can't be inferred "
+                "from Vision's centroids. Real multimodal fusion (Art. V §1) needs "
+                "either a spatially-resolved expression file that already carries its "
+                "own obsm['spatial'] (Visium/MERFISH/Xenium), or an image/expression "
+                "pair with a matching cell count and real cross-modal registration "
+                "(Art. XII §1) -- this pipeline does not yet perform that registration "
+                "itself."
+            )
         # Test/demo convenience: derive spatial coords from Vision's centroids
         # when the expression data doesn't already carry its own (e.g. a
-        # platform like Visium/MERFISH would already have obsm["spatial"]).
+        # platform like Visium/MERFISH would already have obsm["spatial"]) --
+        # only valid when the two modalities already share a cell count.
         adata.obsm["spatial"] = np.array([cell["centroid_xy"] for cell in vision_cells])
 
     spatial_knn_graph(adata)

@@ -12,6 +12,12 @@ VGG16 is the *default* on this CPU-only dev box (weights ~528MB, fast
 enough to actually test); DINOv2's weight download (~1.2GB) is lazy --
 only happens if `Dinov2Embedder` is actually instantiated -- so it's wired
 for real without being forced on default test runs.
+
+Both backbones and every input tensor move to `settings.nexus_device`
+("cpu" by default, "cuda" once a CUDA torch/torchvision is installed and
+`NEXUS_DEVICE=cuda` is set) -- `embed_patch()`'s return value is always
+brought back to CPU/`numpy` before leaving this module, so callers never
+need to know or care which device inference actually ran on.
 """
 
 from __future__ import annotations
@@ -41,22 +47,25 @@ class Vgg16Embedder(EmbeddingBackend):
     model_version = "vgg16-conv5_3-zeropad1024-v1"
     _RAW_DIM = 512
 
-    def __init__(self) -> None:
+    def __init__(self, device: str | None = None) -> None:
         from torchvision.models import VGG16_Weights, vgg16
 
+        from nexus_agent.shared.config import settings
+
+        self._device = device or settings.nexus_device
         weights = VGG16_Weights.IMAGENET1K_V1
         full = vgg16(weights=weights)
         full.eval()
         # features[0:30] = through conv5_3's ReLU, i.e. before the final maxpool.
-        self._backbone = torch.nn.Sequential(*list(full.features.children())[:30])
+        self._backbone = torch.nn.Sequential(*list(full.features.children())[:30]).to(self._device)
         self._preprocess = weights.transforms()
 
     @torch.inference_mode()
     def embed_patch(self, patch: np.ndarray) -> np.ndarray:
         tensor = torch.from_numpy(np.ascontiguousarray(patch)).permute(2, 0, 1)
-        tensor = self._preprocess(tensor).unsqueeze(0)
+        tensor = self._preprocess(tensor).unsqueeze(0).to(self._device)
         features = self._backbone(tensor)  # (1, 512, H', W')
-        pooled = features.mean(dim=[2, 3]).squeeze(0).numpy().astype(np.float64)
+        pooled = features.mean(dim=[2, 3]).squeeze(0).cpu().numpy().astype(np.float64)
         return np.concatenate([pooled, np.zeros(EMBEDDING_DIM - self._RAW_DIM)])
 
 
@@ -82,16 +91,20 @@ class Dinov2Embedder(EmbeddingBackend):
     _MEAN = (0.485, 0.456, 0.406)
     _STD = (0.229, 0.224, 0.225)
 
-    def __init__(self) -> None:
-        self._model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitl14")
+    def __init__(self, device: str | None = None) -> None:
+        from nexus_agent.shared.config import settings
+
+        self._device = device or settings.nexus_device
+        self._model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitl14").to(self._device)
         self._model.eval()
 
     @torch.inference_mode()
     def embed_patch(self, patch: np.ndarray) -> np.ndarray:
         tensor = torch.from_numpy(np.ascontiguousarray(patch)).permute(2, 0, 1).float() / 255.0
         tensor = torch.nn.functional.interpolate(tensor.unsqueeze(0), size=(224, 224), mode="bilinear")
-        mean = torch.tensor(self._MEAN).view(1, 3, 1, 1)
-        std = torch.tensor(self._STD).view(1, 3, 1, 1)
+        tensor = tensor.to(self._device)
+        mean = torch.tensor(self._MEAN, device=self._device).view(1, 3, 1, 1)
+        std = torch.tensor(self._STD, device=self._device).view(1, 3, 1, 1)
         tensor = (tensor - mean) / std
         embedding = self._model(tensor)  # (1, 1024)
-        return embedding.squeeze(0).numpy().astype(np.float64)
+        return embedding.squeeze(0).cpu().numpy().astype(np.float64)
