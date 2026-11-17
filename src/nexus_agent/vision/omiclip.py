@@ -28,7 +28,9 @@ Disclosures:
   not publish with the model; `gene_sentences` applies Loki's other filters
   but not that one, so sentences can differ from the ones OmiCLIP saw.
 - First use downloads a 7.7 GB checkpoint (with training state; ~2.5 GB of
-  it is model weights). It is loaded with `torch.load(weights_only=True)`.
+  it is model weights). It is loaded with `torch.load(weights_only=True)`,
+  allowing only the numpy scalar/dtype types its training metadata pickles
+  (`_load_state_dict`) -- never an unrestricted pickle load.
 """
 
 from __future__ import annotations
@@ -62,6 +64,25 @@ def omiclip_checkpoint_path() -> str:
     return hf_hub_download(OMICLIP_REPO, OMICLIP_FILENAME, revision=OMICLIP_REVISION)
 
 
+def _load_state_dict(checkpoint_path: str) -> dict[str, torch.Tensor]:
+    """The model weights from the Loki training checkpoint, which also holds
+    optimizer and grad-scaler state. `weights_only=True` rejects it as-is
+    because its metadata pickles numpy scalars and dtypes, so exactly those
+    types are allowed and nothing else -- the file came from the network,
+    and an unrestricted pickle load would execute arbitrary code in it.
+    """
+    allowed = [
+        np.dtype,
+        # numpy 2 moved numpy.core to numpy._core; the pickle names the old path
+        ((getattr(np, "_core", None) or np.core).multiarray.scalar, "numpy.core.multiarray.scalar"),
+        *(getattr(np.dtypes, name) for name in dir(np.dtypes) if name.endswith("DType")),
+    ]
+    with torch.serialization.safe_globals(allowed):
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    state_dict = checkpoint.get("state_dict", checkpoint)
+    return {k.removeprefix("module."): v for k, v in state_dict.items()}
+
+
 def gene_sentences(var_names, expression: np.ndarray, n_genes: int = GENES_PER_SENTENCE) -> list[str]:
     """OmiCLIP's text input for each row of `expression` ((n_cells,
     n_genes), raw or normalized -- the per-cell ranking is the same): the
@@ -91,10 +112,10 @@ class OmiclipEmbedder(EmbeddingBackend):
         from nexus_agent.shared.config import settings
 
         self._device = device or settings.nexus_device
-        self._model, self._preprocess = open_clip.create_model_from_pretrained(
-            OMICLIP_ARCH, pretrained=checkpoint_path or omiclip_checkpoint_path(), device=self._device
-        )
-        self._model.eval()
+        model, _train_preprocess, self._preprocess = open_clip.create_model_and_transforms(OMICLIP_ARCH, pretrained=None)
+        # strict: every OmiCLIP weight must land, or this isn't OmiCLIP
+        model.load_state_dict(_load_state_dict(checkpoint_path or omiclip_checkpoint_path()), strict=True)
+        self._model = model.to(self._device).eval()
         self._tokenizer = open_clip.get_tokenizer(OMICLIP_ARCH)
 
     def image_tensor(self, patches: list[np.ndarray]) -> torch.Tensor:
