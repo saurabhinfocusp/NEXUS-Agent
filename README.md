@@ -49,6 +49,8 @@ docs linked above; this README only covers running what's built so far.
 #    model weight downloads.)
 conda env create -f environment.yml
 conda activate nexus-agent
+which python   # must point into .../envs/nexus-agent -- a base-env pytest
+               # fails at import time (no psycopg/peft)
 
 # 2. Bring up local infra: Postgres (with the pgvector extension, for
 #    Phase 4's RAG literature index), Redis, MinIO (S3-compatible storage)
@@ -58,7 +60,7 @@ docker compose up -d
 # 3. Run the tests
 pytest tests/ -m "not integration" -q   # fast tests (no Docker, no model weights)
 pytest tests/ -m integration            # integration tests: Docker + real
-                                         # CellPose/VGG16 inference + a one-time
+                                         # CellPose/OmiCLIP inference + a one-time
                                          # ~27MB dataset fetch for the AJI
                                          # benchmark (test_aji_benchmark.py
                                          # alone takes ~15-20 min on CPU) +
@@ -66,6 +68,40 @@ pytest tests/ -m integration            # integration tests: Docker + real
                                          # evidence, correction/fine-tune,
                                          # and dashboard tests.
 ```
+
+**The morphology encoder's weights.** Vision embeds cells with OmiCLIP by
+default, and the first real-path run (an integration test or a webapp
+upload) downloads its pinned 7.7 GB checkpoint from Hugging Face. If that
+download stalls, or you already have the file, point `.env` at it so it's
+never fetched again:
+
+```bash
+OMICLIP_CHECKPOINT_PATH=/path/to/omiclip/checkpoint.pt
+```
+
+`VISION_EMBEDDER=vgg16` (or `dinov2`) switches to an encoder with a much
+smaller download.
+
+**Running the fast suite the way CI does.** CI
+(`.github/workflows/tests.yml`) runs only the fast suite, with no Postgres,
+MinIO or Redis. A fast test that quietly reaches your running
+`docker compose` passes locally and fails there, so check with the
+services pointed at a closed port:
+
+```bash
+POSTGRES_PORT=1 MINIO_ENDPOINT=http://127.0.0.1:1 REDIS_PORT=1 pytest tests/ -m "not integration" -q
+```
+
+A single test runs the usual way, e.g.
+`pytest tests/test_critic.py::test_veto_below_threshold -q`.
+
+**Integration tests share your dev database.** They run against the same
+Postgres the webapp uses, and leave it as they found it: code that reads
+a whole table (dashboards, RAG retrieval, the fine-tune cycle) is tested
+against private per-test copies (`tests/_isolated_schema.py`), and tests
+that write learning-loop rows delete them afterwards
+(`tests/_learning_db.py`). New integration tests should do the same rather
+than empty a shared table.
 
 ## Upload-and-view webapp
 
@@ -97,8 +133,19 @@ instead of a plain browser tab:
   Port**, enter `8420`, then click the 🌐 icon on that row to open it.
 
 A submitted run takes several minutes to reach `done` — real CellPose +
-VGG16 inference on CPU, not a hang — the page polls in the background so
-there's no need to keep it in the foreground.
+OmiCLIP inference on CPU, not a hang — the page polls in the background so
+there's no need to keep it in the foreground. While a real run is in
+progress, don't edit `.py` files under `--reload`: the reloader waits for
+the run to finish before restarting, and the server answers nothing
+(including that run's own status polling) until it does.
+
+To try a real sample instead of synthetic data, fetch one HEST-1k sample
+(image + `.h5ad`) and upload it:
+
+```bash
+python scripts/download_hest_sample.py TENX95   # needs a Hugging Face token;
+                                                 # see the script's docstring
+```
 
 The expression file isn't limited to `.h5ad`: `.loom`, a 10x Genomics
 `.h5` feature-barcode matrix, a zipped/tarred 10x mtx bundle, or
@@ -187,7 +234,8 @@ thresholds), and as of Phase 3, Vision/Analyst run *real* model inference
 too -- but only if you point the state at real data. Add `image_uri`/
 `expression_uri` (object-store references, uploaded via
 `nexus_agent.data.object_store.put_array`/`put_anndata`) to `initial_state`
-and Vision will actually segment with CellPose and embed with VGG16, and
+and Vision will actually segment with CellPose and embed with OmiCLIP (or
+the encoder `VISION_EMBEDDER` selects), and
 Analyst will actually fuse via the graph transformer, instead of emitting
 the single-synthetic-cell stub shown above. See
 [tests/test_graph_real_pipeline.py](tests/test_graph_real_pipeline.py) for
@@ -222,9 +270,11 @@ src/nexus_agent/
 ├── agents/     # Coordinator, QC, Vision, Analyst, Spatial Transcriptomics,
 │               # Biology (Enrichment), Critic — contracts + node logic
 │               # (Art. III §1; Spatial/Biology/QC are Art. III §4 extensions)
-├── vision/     # CellPose segmentation, VGG16/DINOv2 embedding (Art. XII §2)
+├── vision/     # CellPose segmentation, OmiCLIP (default)/VGG16/DINOv2
+│               # embedding (Art. XII §2)
 ├── analyst/    # Scanpy/Squidpy ingestion, graph-transformer fusion (Art. XII §3)
-├── benchmark/  # Segmentation AJI metric + DSB2018 demo benchmark harness
+├── benchmark/  # Segmentation AJI metric + DSB2018 demo benchmark harness,
+│               # governance benchmark (catch rate, false alarms, calibration)
 ├── xai/        # Grad-CAM++/attention rollout, SHAP, RAG literature layer,
 │               # evidence store, explainability coverage metric (Art. VI)
 ├── report/     # Confidence-weighted report rendering (Art. VI §2)
@@ -233,12 +283,14 @@ src/nexus_agent/
 │               # feedback-value reporting (Art. VII §2/§4, Art. XII §6)
 ├── metrics/    # Veto-rate/latency/confidence dashboards (Art. XII §8)
 ├── graph/      # LangGraph StateGraph assembly and routing
+├── llm/        # Optional, off by default: question intake + a report narrative
+│               # whose sentences must cite the findings they name
 └── webapp/     # Upload-and-view frontend: FastAPI app + static/ (HTML/CSS/JS,
                 # no build step), mounts review/api.py at /review/*
 tests/          # pytest; integration tests marked `@pytest.mark.integration`
 db/schema.sql   # Postgres init script: provenance_log, correction_log,
                 # literature_chunks, xai_evidence, message_log,
-                # escalation_queue, finetune_runs
+                # escalation_queue, finetune_runs, pipeline_runs
 docker-compose.yml  # Postgres (pgvector/pgvector:pg16), Redis, MinIO
 ```
 
@@ -246,8 +298,9 @@ docker-compose.yml  # Postgres (pgvector/pgvector:pg16), Redis, MinIO
 
 Phases 0-5 are implemented. Phases 0-3: a working agent graph —
 Postgres-backed checkpointing, a validated message bus, real per-agent
-contracts and procedural logic, and a real (if CPU-scoped — VGG16 default,
-StarDist deferred; see [ROADMAP.md](ROADMAP.md)'s Phase 3 scope notes)
+contracts and procedural logic, and a real (if CPU-scoped — OmiCLIP
+default since Constitution v1.3, StarDist deferred; see
+[ROADMAP.md](ROADMAP.md)'s Phase 3 scope notes)
 Vision/Analyst model stack producing 128-dim fused per-cell representations
 with provenance intact. A real AJI benchmark (0.791 mean, DSB2018 demo
 data) proves the validation harness, though full Art. VIII multi-platform
