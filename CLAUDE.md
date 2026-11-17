@@ -54,7 +54,10 @@ invoked directly from Python (see README.md's "Running a task") or through
 the webapp's HTTP surface.
 
 CI (`.github/workflows/tests.yml`) runs only the fast suite, on pushes to
-`main` and on pull requests. The integration suite is never run in CI —
+`main` and on pull requests, with no Postgres/MinIO/Redis. A fast test that
+quietly reaches a running local `docker compose` passes on your machine and
+fails there; check with
+`POSTGRES_PORT=1 MINIO_ENDPOINT=http://127.0.0.1:1 REDIS_PORT=1 pytest tests/ -m "not integration" -q`. The integration suite is never run in CI —
 run it locally against `docker compose up -d` before trusting a change to
 anything Postgres/S3/model-backed.
 

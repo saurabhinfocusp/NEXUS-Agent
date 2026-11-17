@@ -24,6 +24,15 @@ from nexus_agent.shared.config import settings
 from nexus_agent.shared.schemas import AgentName
 
 
+@pytest.fixture(autouse=True)
+def _no_promoted_checkpoint(monkeypatch):
+    """The fused path looks up the latest promoted cell-type checkpoint in
+    Postgres; these tests must run without it (CI has no database). Tests
+    that want a checkpoint override this through `_run_fused`.
+    """
+    monkeypatch.setattr("nexus_agent.learning.celltyping.latest_promoted_checkpoint_bytes", lambda dsn: None)
+
+
 def _state_with_vision_cells(n_cells: int) -> dict:
     state = {
         "run_id": uuid.uuid4(),
