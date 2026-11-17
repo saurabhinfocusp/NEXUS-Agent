@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     # another base stop being applied (see learning/celltyping.py).
     fusion_checkpoint_uri: str | None = None
 
+    # Optional LLM layer (`nexus_agent/llm/`), off by default. Neither
+    # switch lets a model create or alter a claim: intake only picks the
+    # opt-in analyses for a free-text question, and the narrative is prose
+    # over already-reviewed claims, verified sentence by sentence.
+    llm_intake_enabled: bool = False
+    llm_narrative_enabled: bool = False
+    llm_model: str = "claude-opus-5-5"
+
     @property
     def postgres_dsn(self) -> str:
         return (

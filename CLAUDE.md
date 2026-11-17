@@ -252,6 +252,43 @@ default `cpu`) selects the torch device for Vision's CellPose and
 VGG16/DINOv2 inference only — the fusion transformer, the fine-tune loop
 and Grad-CAM++ do not read it yet.
 
+### Confidence is measured, and tests need data that deserves to pass
+
+Real-path confidences are computed from the data, not constants: Vision
+from CellPose's cell probability (`vision/segmentation.py::
+cell_confidences`), Analyst from each cell's silhouette in its
+spatial-domain assignment (`analyst/domains.py`) bounded by the cell-type
+head's softmax probability, Spatial from the share of a cell's spatial
+neighbours in its niche. A consequence for tests: spatially random or
+structureless synthetic data now scores low and is vetoed, then escalated
+at the veto cap. A real-path test that expects `pass` needs structured
+data (see `tests/test_graph_smoke.py::_spatially_structured_adata`) --
+don't "fix" such a failure by loosening the confidence.
+
+### One fusion base, identified by id
+
+`agents/analyst.py::active_fusion_base()` returns the fusion transformer,
+its expression projector and a `base_id`: the pretrained base at
+`settings.fusion_checkpoint_uri` (`analyst/pretrain.py`) or, by default,
+the fixed-seed untrained one. Analyst's fusion, Critic's SHAP and the
+fine-tune cycle must all go through it -- fused embeddings from different
+bases share no coordinate system. The id is written to each provenance row
+and each cell-type checkpoint, and a checkpoint from another base is
+ignored rather than applied. With a pretrained base, expression features
+come from its gene-indexed projector, never from a per-sample PCA.
+
+### The LLM layer is optional and cannot make claims
+
+`llm/` (off by default: `LLM_INTAKE_ENABLED`, `LLM_NARRATIVE_ENABLED`)
+uses the `anthropic` SDK. Intake only sets the two opt-in analysis flags;
+the narrative is written in `_report_node`, after Critic's `pass`, over
+claims already in the report, and `llm/narrative.py::verify_narrative`
+drops sentences that don't cite the findings they name. Both degrade to
+"no LLM" on any failure. Its tests (`tests/test_llm.py`) drive the real
+SDK against a mock transport, so they need the `anthropic` package but no
+API key or network. Keep new LLM uses inside this pattern: no model output
+may become a claim or change a confidence.
+
 ### Best-effort persistence logs, it doesn't raise
 
 Dashboard/evidence/escalation writes (`_with_message_logging`,

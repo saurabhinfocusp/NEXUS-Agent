@@ -120,7 +120,27 @@ def _report_node(state: RunState) -> dict:
             }
 
     report = render_report(state["run_id"], state["task_id"], report_claims, evidence_by_claim_id)
-    return {"report_html": render_report_html(report)}
+    return {"report_html": render_report_html(report, narrative_html=_narrative_html(report))}
+
+
+def _narrative_html(report) -> str:
+    """The optional LLM-written summary (`llm/narrative.py`), or "" when it
+    is switched off or can't be produced. Runs only here, after Critic's
+    `pass`, over the claims the report already contains -- it can describe
+    reviewed claims but not add one (Art. III §2). Never fails the report.
+    """
+    from nexus_agent.shared.config import settings
+
+    if not settings.llm_narrative_enabled:
+        return ""
+    try:
+        from nexus_agent.llm.narrative import render_narrative_html, write_narrative
+
+        narrative = write_narrative(report)
+        return render_narrative_html(narrative) if narrative is not None else ""
+    except Exception:
+        logger.warning("could not write the report narrative for run %s", report.run_id, exc_info=True)
+        return ""
 
 
 def _human_review_node(state: RunState) -> dict:

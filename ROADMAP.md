@@ -534,6 +534,61 @@ Found by code review, not by a failing run. Each is pinned by
 - [x] Best-effort persistence failures (message log, escalation, evidence
       store, evidence fetch, QC plot) are logged instead of swallowed.
 
+### Trust layer (2026-11-17)
+
+Chosen direction after a market check: compete on auditable, evidence-backed
+analysis rather than on breadth against LLM-driven spatial agents. All four
+items below are covered by the fast suite only. **None has been run on real
+tissue, against the integration suite, or (for the LLM layer) against the
+live API.**
+
+- [x] **Measured confidence** (Art. II Principle 4). Vision: mean CellPose
+      cell probability inside each mask -- checked once against the real
+      CellPose model on synthetic cells (sharp 0.98, blurred 0.91). Analyst:
+      the cell's silhouette in its spatial-domain assignment, bounded by the
+      cell-type head's softmax probability when a call is made. Spatial:
+      Laplace-smoothed share of a cell's spatial neighbours in its niche.
+      **Not calibrated:** none of these has been compared against ground
+      truth, and the softmax probability has no temperature scaling. A
+      sample whose confidences land in Critic's veto band is now vetoed,
+      then escalated at the veto cap, rather than passed at a constant 0.7.
+- [x] **Spatial-domain assignment** (`analyst/domains.py`): KMeans over the
+      fused representation, k chosen by silhouette. Analyst claims now carry
+      `spatial_domain`. Labels are cluster ids, not anatomical names; Art.
+      XII §7's ARI >= 0.70 is unmeasured. KMeans is a new engineering choice.
+- [x] **Fusion pretraining** (`analyst/pretrain.py`,
+      `scripts/pretrain_fusion.py`): masked cross-modal reconstruction, the
+      graph-autoencoder training the xSiGra family uses, so Art. XII §3's
+      architecture is unchanged. Adds a gene-indexed `ExpressionProjector`:
+      the default per-sample PCA gives every sample its own coordinate
+      system, so neither a trained base nor a cell-type head could transfer
+      between samples without it. **No pretrained base ships and none has
+      been trained on real data** -- the default is still the fixed-seed
+      untrained base until `FUSION_CHECKPOINT_URI` is set.
+- [x] **Fusion-base id.** Provenance rows and cell-type checkpoints record
+      the base their embeddings came from. Analyst and Critic's SHAP ignore
+      a promoted checkpoint trained on another base, and the fine-tune cycle
+      trains only on embeddings from the active base. Switching bases
+      therefore drops cell typing until a new checkpoint is promoted.
+- [x] **Governance benchmark** (`benchmark/governance.py`):
+      `error_detection_report` (catch rate at Critic's veto threshold,
+      false-alarm rate, AUROC, expected calibration error) and
+      `correction_learning_curve` (held-out accuracy per number of expert
+      corrections, using the production training step). Instruments only:
+      no labelled dataset is in the repo, so there are no results yet.
+- [x] **Optional LLM layer** (`llm/`, off by default; `anthropic` SDK,
+      `claude-opus-5-5`). Intake maps a free-text question to the two opt-in
+      analysis flags and lists what the pipeline can't answer, which is
+      shown on the report. Narrative drafts a summary over already-reviewed
+      claims; `verify_narrative` (plain code) drops any sentence that cites
+      no finding, cites a missing one, or names a result it doesn't cite,
+      and renders the rest at the tier of their weakest finding. The check
+      is for grounding, not truth. **Open:** Art. XII §12 requires prompt
+      templates to carry a version in provenance; these don't yet.
+- [x] `POST /api/runs` accepts `run_spatial_analysis`,
+      `run_enrichment_analysis` and `question`. The frontend form has no
+      controls for them yet.
+
 ### CI
 
 - [x] `.github/workflows/tests.yml` runs the fast suite on pushes to `main`
@@ -552,13 +607,20 @@ refiner-not-LoRA fine-tune path) and the Art. VIII checklist below:
       cell count to equal the expression row count, which real
       Visium/HEST samples do not satisfy; `data/container.py::
       check_registration` is not called by the pipeline.
-- [ ] The fusion transformer is still untrained (fixed-seed random
-      weights).
+- [ ] Train a fusion base on real paired data (the mechanism exists, see
+      "Trust layer"; the weights in use are still fixed-seed random). An
+      alternative worth evaluating is a published visual-omics model
+      (OmiCLIP/Loki: public, BSD-3, 7.7 GB checkpoint) as the morphology
+      or fusion encoder; replacing the Art. XII §2-3 stack that way is an
+      Art. IX §2 amendment.
+- [ ] Spot-level Vision for Visium-style data (embed the image patch at
+      each spot instead of segmenting cells) -- the practical route past
+      the registration blocker above, and what pretraining on HEST needs.
 - [ ] No cell typing until a reviewer correction has been fine-tuned and
-      promoted; Analyst never sets `spatial_domain`.
-- [ ] Vision (0.8), Analyst (0.7) and Spatial (0.65) report constant
-      confidences on the real path, so Critic's review is a threshold on a
-      constant. Critic has no consistency checks beyond that.
+      promoted.
+- [ ] Run the governance benchmark on a labelled dataset and calibrate the
+      confidences against it. Critic still only thresholds confidence; it
+      has no cross-claim consistency checks.
 - [ ] Nothing triggers the fine-tune loop: `should_trigger_finetune` and
       `run_finetune_cycle` have no scheduler or endpoint calling them.
 

@@ -87,6 +87,12 @@ async def create_pipeline_run(
     # bundle components (matrix.mtx + barcodes.tsv + features.tsv)
     # selected together -- see webapp/uploads.py::read_expression_upload.
     expression: list[UploadFile] = File(...),
+    # Opt-in analyses (Spatial Transcriptomics / Biology agents).
+    run_spatial_analysis: bool = Form(False),
+    run_enrichment_analysis: bool = Form(False),
+    # Free-text question. Only read when LLM_INTAKE_ENABLED is set, where it
+    # can switch on the opt-in analyses it calls for (webapp/pipeline_runner.py).
+    question: str | None = Form(None),
 ) -> dict:
     if not image.filename:
         raise HTTPException(status_code=400, detail="image file is missing a filename")
@@ -127,6 +133,9 @@ async def create_pipeline_run(
         sample_id=sample_id,
         image_uri=image_uri,
         expression_uri=expression_uri,
+        run_spatial_analysis=run_spatial_analysis,
+        run_enrichment_analysis=run_enrichment_analysis,
+        question=question,
     )
     return {"run_id": str(run_id), "status": "pending"}
 

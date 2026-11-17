@@ -193,7 +193,7 @@ def _render_entry(entry: ClaimReportEntry) -> str:
 </div>"""
 
 
-def render_report_html(report: Report) -> str:
+def render_report_html(report: Report, *, narrative_html: str = "") -> str:
     """Render a `Report` to a minimal, self-contained HTML document.
 
     Art. VI §2 enforcement: the tier -> style mapping (`_TIER_STYLES`) is
@@ -201,6 +201,10 @@ def render_report_html(report: Report) -> str:
     `Report`/`ClaimReportEntry` and cannot be supplied or overridden by a
     caller. A low-confidence entry is therefore structurally incapable of
     rendering with the same visual weight as a high-confidence one.
+
+    `narrative_html` is an optional pre-rendered summary section
+    (`llm/narrative.py::render_narrative_html`, which applies the same tier
+    styles to its own sentences), placed above the per-claim entries.
     """
 
     entries_html = "\n".join(_render_entry(entry) for entry in report.entries)
@@ -213,6 +217,7 @@ def render_report_html(report: Report) -> str:
 <body>
 <h1>NEXUS-Agent Report</h1>
 <p>Run: {report.run_id} / Task: {report.task_id}</p>
+{narrative_html}
 {entries_html}
 </body>
 </html>

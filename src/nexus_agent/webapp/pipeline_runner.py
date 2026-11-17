@@ -10,6 +10,7 @@ captured into the row via `mark_failed` instead.
 
 from __future__ import annotations
 
+import html
 import logging
 import uuid
 
@@ -46,6 +47,57 @@ def summarize_result(result: dict) -> tuple[str, list[dict]]:
     return verdict, claims
 
 
+def _apply_question(
+    goal: AnalyticalGoal, question: str | None, run_id: uuid.UUID
+) -> tuple[AnalyticalGoal, list[str]]:
+    """Let the optional LLM intake (`llm/intake.py`) switch on the opt-in
+    analyses a free-text question calls for. It can only add to what the
+    submitter ticked explicitly, never switch one off, and if it is
+    disabled or fails the run proceeds with the explicit flags alone.
+
+    Returns the goal and the parts of the question the pipeline cannot
+    answer, which `run_pipeline_job` shows the submitter.
+    """
+    from nexus_agent.shared.config import settings
+
+    if not (question and question.strip() and settings.llm_intake_enabled):
+        return goal, []
+    try:
+        from nexus_agent.llm.intake import plan_goal
+
+        planned, plan = plan_goal(question, sample_id=goal.sample_id, modalities=goal.modalities)
+    except Exception:
+        logger.warning("LLM intake failed for run %s; using the submitted flags", run_id, exc_info=True)
+        return goal, []
+    logger.info("LLM intake for run %s: %s", run_id, plan.rationale)
+    goal = goal.model_copy(
+        update={
+            "run_spatial_analysis": goal.run_spatial_analysis or planned.run_spatial_analysis,
+            "run_enrichment_analysis": goal.run_enrichment_analysis or planned.run_enrichment_analysis,
+        }
+    )
+    return goal, plan.out_of_scope
+
+
+def with_scope_notice(report_html: str | None, out_of_scope: list[str]) -> str | None:
+    """Prepend a notice listing the parts of the submitter's question this
+    pipeline did not address, so a report that answers half a question
+    isn't read as answering all of it. When the run produced no report
+    (QC rejection, escalation), the notice stands alone.
+    """
+    if not out_of_scope:
+        return report_html
+    items = "".join(f"<li>{html.escape(part)}</li>" for part in out_of_scope)
+    notice = (
+        '<div class="scope-notice"><p><b>Not addressed by this analysis.</b> '
+        f"These parts of your question are outside what the pipeline does:</p><ul>{items}</ul></div>"
+    )
+    if not report_html:
+        return notice
+    marker = "<h1>NEXUS-Agent Report</h1>"
+    return report_html.replace(marker, marker + "\n" + notice, 1) if marker in report_html else notice + report_html
+
+
 def run_pipeline_job(
     dsn: str,
     *,
@@ -54,14 +106,24 @@ def run_pipeline_job(
     sample_id: str,
     image_uri: str,
     expression_uri: str,
+    run_spatial_analysis: bool = False,
+    run_enrichment_analysis: bool = False,
+    question: str | None = None,
 ) -> None:
     mark_running(dsn, run_id)
     try:
+        goal = AnalyticalGoal(
+            sample_id=sample_id,
+            modalities=["image", "expression"],
+            run_spatial_analysis=run_spatial_analysis,
+            run_enrichment_analysis=run_enrichment_analysis,
+        )
+        goal, out_of_scope = _apply_question(goal, question, run_id)
         initial_state = {
             "run_id": run_id,
             "task_id": task_id,
             "trace_id": uuid.uuid4(),
-            "goal": AnalyticalGoal(sample_id=sample_id, modalities=["image", "expression"]),
+            "goal": goal,
             "history": [],
             "verdict": None,
             "force_verdict": None,
@@ -73,7 +135,8 @@ def run_pipeline_job(
             result = graph.invoke(initial_state, config={"configurable": {"thread_id": str(run_id)}})
 
         verdict, claims = summarize_result(result)
-        mark_done(dsn, run_id, verdict=verdict, claims=claims, report_html=result.get("report_html"))
+        report_html = with_scope_notice(result.get("report_html"), out_of_scope)
+        mark_done(dsn, run_id, verdict=verdict, claims=claims, report_html=report_html)
     except Exception as exc:  # noqa: BLE001
         logger.exception("pipeline run %s failed", run_id)
         mark_failed(dsn, run_id, str(exc))

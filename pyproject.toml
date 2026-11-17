@@ -60,6 +60,12 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
+    # The LLM layer's tests drive the real SDK against a mock transport.
+    "anthropic>=2.0",
+]
+# Optional LLM layer (nexus_agent/llm/): question intake + report narrative.
+llm = [
+    "anthropic>=2.0",
 ]
 
 [tool.setuptools.packages.find]
