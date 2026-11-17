@@ -23,7 +23,10 @@ predict correctly, using the latest promoted fine-tuned checkpoint?
   `fused_embedding` through the latest *promoted* checkpoint and checks
   whether the prediction now matches the expert's `corrected_value`. Cases
   with no recoverable `fused_embedding` are excluded from the denominator
-  (not crashed on). If no checkpoint has ever been promoted yet,
+  (not crashed on), and so are embeddings fused in a different fusion
+  space than the checkpoint was trained in -- they share no coordinate
+  system with it (see `analyst/pretrain.py::fusion_space_id`), so scoring
+  them would measure nothing. If no checkpoint has ever been promoted yet,
   `accuracy_after` is `None` for that tissue type -- there is nothing to
   measure post fine-tuning yet.
 """
@@ -35,9 +38,12 @@ from typing import Any
 import psycopg
 
 from nexus_agent.data.object_store import get_bytes
-from nexus_agent.data.provenance import fetch_provenance
-from nexus_agent.learning.celltyping import latest_promoted_checkpoint_uri, predict_cell_type
-from nexus_agent.learning.lora_finetune import label_string
+from nexus_agent.learning.celltyping import (
+    checkpoint_fusion_space_id,
+    latest_promoted_checkpoint_uri,
+    predict_cell_type,
+)
+from nexus_agent.learning.lora_finetune import label_string, latest_fused_embedding
 
 
 def _fetch_cell_type_corrections_with_tissue(conn: psycopg.Connection) -> list[dict[str, Any]]:
@@ -59,6 +65,7 @@ def feedback_value_report(dsn: str) -> dict[str, dict]:
 
     checkpoint_uri = latest_promoted_checkpoint_uri(dsn)
     checkpoint_bytes = get_bytes(checkpoint_uri) if checkpoint_uri is not None else None
+    checkpoint_space_id = checkpoint_fusion_space_id(checkpoint_bytes) if checkpoint_bytes is not None else None
 
     by_tissue: dict[str, list[dict[str, Any]]] = {}
     for corr in corrections:
@@ -75,11 +82,7 @@ def feedback_value_report(dsn: str) -> dict[str, dict]:
             matches = 0
             n_scored = 0
             for corr in corrs:
-                embedding = None
-                for row in reversed(fetch_provenance(dsn, corr["run_id"])):
-                    if row["claim_id"] == corr["claim_id"] and row.get("fused_embedding") is not None:
-                        embedding = row["fused_embedding"]
-                        break
+                embedding = latest_fused_embedding(dsn, corr["run_id"], corr["claim_id"], checkpoint_space_id)
                 if embedding is None:
                     continue
                 n_scored += 1

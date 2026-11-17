@@ -108,7 +108,7 @@ def test_real_image_and_expression_fuse_end_to_end_with_provenance():
 
 def test_expression_only_stays_provisional():
     run_id = uuid.uuid4()
-    _, expression_uri = _upload_sample(run_id)
+    expression_uri = _upload_spatially_resolved_expression(run_id)
     graph = compile_with_memory()
 
     result = graph.invoke(
@@ -126,6 +126,27 @@ def test_expression_only_stays_provisional():
     assert all(claim.provisional for claim in claims)  # single modality -> provisional (Art. V §1)
 
 
+def _upload_spatially_resolved_expression(run_id: uuid.UUID) -> str:
+    """An expression-only sample that carries its own `obsm["spatial"]`, as
+    a Visium/MERFISH/Xenium file does -- the only kind of expression-only
+    input a spatial analysis can run on. Two populations, each with its own
+    expression program, in two separate regions.
+    """
+    rng = np.random.default_rng(0)
+    n_per_region = 10
+    population = np.array([0] * n_per_region + [1] * n_per_region)
+    counts = rng.poisson(5, size=(2 * n_per_region, 20)).astype(np.float32)
+    counts[population == 0, :10] += 60
+    counts[population == 1, 10:] += 60
+    adata = AnnData(
+        X=counts,
+        obs=pd.DataFrame(index=[f"spot_{i}" for i in range(2 * n_per_region)]),
+        var=pd.DataFrame(index=[f"GENE{i}" for i in range(20)]),
+    )
+    adata.obsm["spatial"] = rng.random((2 * n_per_region, 2)) * 10 + population[:, None] * 1000
+    return put_anndata(f"tests/{run_id}/expression_spatial.h5ad", adata)
+
+
 def test_real_analyst_spatial_biology_chain_end_to_end():
     """Exercises Analyst -> Spatial -> Biology -> Critic end to end with
     both opt-in flags set (Art. III §4 specialist additions): real Squidpy
@@ -135,7 +156,7 @@ def test_real_analyst_spatial_biology_chain_end_to_end():
     see tests/test_biology.py).
     """
     run_id = uuid.uuid4()
-    _, expression_uri = _upload_sample(run_id)
+    expression_uri = _upload_spatially_resolved_expression(run_id)
     graph = compile_with_memory()
 
     result = graph.invoke(

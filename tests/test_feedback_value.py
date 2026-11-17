@@ -21,6 +21,7 @@ from nexus_agent.learning.feedback_value import feedback_value_report
 from nexus_agent.learning.lora_finetune import run_finetune_cycle
 from nexus_agent.learning.promotion import promote_checkpoint
 from nexus_agent.shared.config import settings
+from tests._learning_db import active_fusion_space_id, seeded_learning_rows  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.integration
 
@@ -38,22 +39,27 @@ def _require_infra():
         pytest.skip(f"MinIO not reachable ({exc}); run `docker compose up -d`.")
 
 
-def test_feedback_value_report_reflects_real_post_finetune_accuracy():
+def test_feedback_value_report_reflects_real_post_finetune_accuracy(seeded_learning_rows):
     dsn = settings.postgres_dsn
     run_id, task_id = uuid.uuid4(), uuid.uuid4()
+    seeded_learning_rows.run_ids.append(run_id)
     rng = np.random.default_rng(99)
+    # The report groups every correction in the DB by tissue type, so this
+    # run's tissues get names no other run uses.
+    tonsil, spleen = f"tonsil-{run_id.hex[:8]}", f"spleen-{run_id.hex[:8]}"
+    source_expression_profile = json.dumps({"fusion_space_id": active_fusion_space_id()})
 
     center_a = rng.normal(size=FUSED_DIM) * 2
     center_b = -center_a
 
     # 3 corrections in "tonsil", 3 in "spleen"; T-cell/B-cell, linearly separable.
     plan = [
-        ("T-cell", "tonsil"),
-        ("T-cell", "tonsil"),
-        ("B-cell", "tonsil"),
-        ("T-cell", "spleen"),
-        ("B-cell", "spleen"),
-        ("B-cell", "spleen"),
+        ("T-cell", tonsil),
+        ("T-cell", tonsil),
+        ("B-cell", tonsil),
+        ("T-cell", spleen),
+        ("B-cell", spleen),
+        ("B-cell", spleen),
     ]
 
     with psycopg.connect(dsn, autocommit=True) as conn:
@@ -69,7 +75,16 @@ def test_feedback_value_report_reflects_real_post_finetune_accuracy():
                      source_expression_profile, component, component_version, fused_embedding)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (run_id, task_id, claim_id, json.dumps({}), json.dumps({}), "analyst", "0.1.0", json.dumps(embedding)),
+                (
+                    run_id,
+                    task_id,
+                    claim_id,
+                    json.dumps({}),
+                    source_expression_profile,
+                    "analyst",
+                    "0.1.0",
+                    json.dumps(embedding),
+                ),
             )
             conn.execute(
                 """
@@ -82,8 +97,8 @@ def test_feedback_value_report_reflects_real_post_finetune_accuracy():
 
     # Before any fine-tune has ever been promoted, nothing to measure yet.
     report_before = feedback_value_report(dsn)
-    assert "tonsil" in report_before and "spleen" in report_before
-    for tissue_type in ("tonsil", "spleen"):
+    assert tonsil in report_before and spleen in report_before
+    for tissue_type in (tonsil, spleen):
         assert report_before[tissue_type]["n_corrections"] == 3
         assert report_before[tissue_type]["accuracy_before"] == 0.0
         if report_before[tissue_type]["accuracy_after"] is not None:
@@ -92,11 +107,12 @@ def test_feedback_value_report_reflects_real_post_finetune_accuracy():
             assert report_before[tissue_type]["accuracy_before"] == 0.0
 
     result = run_finetune_cycle(dsn, epochs=200, lr=0.05, min_corrections=1)
+    seeded_learning_rows.finetune_run_ids.append(result.finetune_run_id)
     promote_checkpoint(dsn, result.finetune_run_id, new_scores={"H&E": 0.85}, prior_scores={"H&E": 0.80})
 
     report_after = feedback_value_report(dsn)
 
-    for tissue_type in ("tonsil", "spleen"):
+    for tissue_type in (tonsil, spleen):
         entry = report_after[tissue_type]
         assert entry["n_corrections"] == 3
         assert entry["accuracy_before"] == 0.0

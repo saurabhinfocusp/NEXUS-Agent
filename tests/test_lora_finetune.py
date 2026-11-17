@@ -36,6 +36,7 @@ from nexus_agent.data import object_store
 from nexus_agent.learning.celltyping import load_checkpoint, predict_cell_type
 from nexus_agent.learning.lora_finetune import run_finetune_cycle, should_trigger_finetune
 from nexus_agent.shared.config import settings
+from tests._learning_db import active_fusion_space_id, seeded_learning_rows  # noqa: F401  (fixture)
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +156,9 @@ def _seed_corrections(dsn: str, run_id: uuid.UUID, task_id: uuid.UUID, rng: np.r
     tissue_types = ["tonsil", "tonsil", None, "spleen", "spleen", "spleen"]
 
     embeddings = []
+    # Tagged with the active fusion space, as Analyst tags real rows --
+    # run_finetune_cycle only trains on embeddings from the space it runs in.
+    source_expression_profile = json.dumps({"fusion_space_id": active_fusion_space_id()})
     with psycopg.connect(dsn, autocommit=True) as conn:
         for i, (label, tissue) in enumerate(zip(labels, tissue_types)):
             claim_id = f"cell-{i}"
@@ -169,7 +173,16 @@ def _seed_corrections(dsn: str, run_id: uuid.UUID, task_id: uuid.UUID, rng: np.r
                      source_expression_profile, component, component_version, fused_embedding)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (run_id, task_id, claim_id, json.dumps({}), json.dumps({}), "analyst", "0.1.0", json.dumps(embedding)),
+                (
+                    run_id,
+                    task_id,
+                    claim_id,
+                    json.dumps({}),
+                    source_expression_profile,
+                    "analyst",
+                    "0.1.0",
+                    json.dumps(embedding),
+                ),
             )
             conn.execute(
                 """
@@ -199,7 +212,7 @@ class TestRunFinetuneCycleIntegration:
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"MinIO not reachable ({exc}); run `docker compose up -d`.")
 
-    def test_run_finetune_cycle_reflects_corrections_in_subsequent_predictions(self):
+    def test_run_finetune_cycle_reflects_corrections_in_subsequent_predictions(self, seeded_learning_rows):
         """THE exit-criterion test: after `run_finetune_cycle`, predicting on
         the ORIGINAL fused embeddings of the corrected cells recovers the
         corrected labels -- proof the correction changed future predictions,
@@ -208,10 +221,12 @@ class TestRunFinetuneCycleIntegration:
         dsn = settings.postgres_dsn
         run_id, task_id = uuid.uuid4(), uuid.uuid4()
         rng = np.random.default_rng(123)
+        seeded_learning_rows.run_ids.append(run_id)
 
         embeddings, labels = _seed_corrections(dsn, run_id, task_id, rng)
 
         result = run_finetune_cycle(dsn, epochs=200, lr=0.05, min_corrections=1)
+        seeded_learning_rows.finetune_run_ids.append(result.finetune_run_id)
 
         assert result.n_corrections == 6
         assert result.checkpoint_uri is not None
@@ -241,9 +256,10 @@ class TestRunFinetuneCycleIntegration:
         )
         assert correct == len(labels), f"expected all {len(labels)} corrected predictions to be recovered, got {correct}"
 
-    def test_run_finetune_cycle_raises_when_no_usable_corrections(self):
+    def test_run_finetune_cycle_raises_when_no_usable_corrections(self, seeded_learning_rows):
         dsn = settings.postgres_dsn
         run_id, task_id = uuid.uuid4(), uuid.uuid4()
+        seeded_learning_rows.run_ids.append(run_id)
 
         # A correction with NO matching provenance_log row -> not usable.
         with psycopg.connect(dsn, autocommit=True) as conn:
@@ -259,9 +275,10 @@ class TestRunFinetuneCycleIntegration:
         with pytest.raises(ValueError):
             run_finetune_cycle(dsn, min_corrections=1_000_000)
 
-    def test_should_trigger_finetune_on_accumulated_corrections(self):
+    def test_should_trigger_finetune_on_accumulated_corrections(self, seeded_learning_rows):
         dsn = settings.postgres_dsn
         run_id, task_id = uuid.uuid4(), uuid.uuid4()
+        seeded_learning_rows.run_ids.append(run_id)
         rng = np.random.default_rng(7)
 
         _seed_corrections(dsn, run_id, task_id, rng)

@@ -12,6 +12,7 @@ import pytest
 
 from nexus_agent.learning.promotion import evaluate_promotion_gate, promote_checkpoint
 from nexus_agent.shared.config import settings
+from tests._learning_db import seeded_learning_rows  # noqa: F401  (fixture)
 
 
 def test_promotion_gate_passes_when_new_scores_match_or_exceed_prior():
@@ -84,7 +85,7 @@ class TestPromoteCheckpointDB:
         except psycopg.OperationalError as exc:
             pytest.skip(f"Postgres not reachable at {settings.postgres_host}:{settings.postgres_port} ({exc}); run `docker compose up -d`.")
 
-    def test_promote_checkpoint_writes_promoted_and_benchmark_scores(self):
+    def test_promote_checkpoint_writes_promoted_and_benchmark_scores(self, seeded_learning_rows):
         with psycopg.connect(settings.postgres_dsn, autocommit=True) as conn:
             row = conn.execute(
                 """
@@ -95,6 +96,10 @@ class TestPromoteCheckpointDB:
                 (5, "test setup", "s3://nexus-agent/checkpoints/test/checkpoint.pt", json.dumps({"0": "T-cell"})),
             ).fetchone()
             finetune_run_id = row[0]
+        # Promoted, this row would be the checkpoint every later real-path run
+        # loads -- and its URI names no real object -- so it must not outlive
+        # the test.
+        seeded_learning_rows.finetune_run_ids.append(finetune_run_id)
 
         result = promote_checkpoint(
             settings.postgres_dsn,

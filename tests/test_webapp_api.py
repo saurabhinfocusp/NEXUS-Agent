@@ -55,10 +55,20 @@ def client():
     return TestClient(app)
 
 
-def _synthetic_image_bytes(size: int = 96) -> bytes:
+N_SYNTHETIC_CELLS = 4
+
+
+def _synthetic_image_bytes(size: int = 128) -> bytes:
+    """`N_SYNTHETIC_CELLS` separated nuclei-sized blobs, so CellPose
+    segments the same number of cells the expression file has rows: the
+    pipeline pairs an image with an expression file that has no
+    `obsm["spatial"]` only when the two counts agree (see
+    `agents/analyst.py::_ingest_and_fuse`).
+    """
     image = np.zeros((size, size), dtype=np.uint8)
-    rr, cc = disk((size // 2, size // 2), 15, shape=image.shape)
-    image[rr, cc] = 200
+    for cy, cx in [(32, 32), (32, 96), (96, 32), (96, 96)][:N_SYNTHETIC_CELLS]:
+        rr, cc = disk((cy, cx), 10, shape=image.shape)
+        image[rr, cc] = 200
     buffer = io.BytesIO()
     Image.fromarray(image).save(buffer, format="PNG")
     return buffer.getvalue()
@@ -70,8 +80,8 @@ def _synthetic_expression_bytes() -> bytes:
 
     rng = np.random.default_rng(0)
     adata = AnnData(
-        X=rng.poisson(3, size=(4, 12)).astype(np.float32),
-        obs=pd.DataFrame(index=[f"cell_{i}" for i in range(4)]),
+        X=rng.poisson(3, size=(N_SYNTHETIC_CELLS, 12)).astype(np.float32),
+        obs=pd.DataFrame(index=[f"cell_{i}" for i in range(N_SYNTHETIC_CELLS)]),
     )
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir) / "expression.h5ad"

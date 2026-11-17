@@ -11,6 +11,7 @@ import uuid
 
 import numpy as np
 import pandas as pd
+import pytest
 from anndata import AnnData
 
 from nexus_agent.agents.spatial import SpatialClaim, spatial_node
@@ -144,3 +145,16 @@ def test_real_path_derives_spatial_coords_from_vision_when_missing(monkeypatch):
     result = spatial_node(state)
     claims = result["history"][0].payload["claims"]
     assert len(claims) == n_cells
+
+
+def test_real_path_without_any_coordinates_fails_with_an_actionable_error(monkeypatch):
+    """Expression-only, no obsm['spatial'], no Vision cells: there is no
+    tissue geometry to analyse, and the failure should say so rather than
+    surface Squidpy's internal KeyError.
+    """
+    adata = _synthetic_adata()
+    del adata.obsm["spatial"]
+    monkeypatch.setattr("nexus_agent.data.object_store.get_anndata", lambda uri: adata)
+
+    with pytest.raises(ValueError, match="no obsm\\['spatial'\\] coordinates and no image"):
+        spatial_node(_base_state(expression_uri="s3://fake-bucket/expr.h5ad"))

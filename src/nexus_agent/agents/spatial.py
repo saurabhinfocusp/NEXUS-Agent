@@ -84,6 +84,18 @@ def _prepare_adata(state: RunState, expression_uri: str):
                     "or an image/expression pair with a matching cell count."
                 )
 
+    if "spatial" not in adata.obsm:
+        # Expression-only and no coordinates of its own (a dissociated
+        # scRNA-seq matrix): there is no tissue geometry to compute niches,
+        # co-occurrence or Moran's I over, so a spatial analysis was asked of
+        # data that can't support one.
+        raise ValueError(
+            f"spatial analysis was requested but expression data at {expression_uri!r} has no "
+            "obsm['spatial'] coordinates and no image was segmented to take them from. Use a "
+            "spatially-resolved expression file (Visium/MERFISH/Xenium), add the matching image, "
+            "or run without run_spatial_analysis."
+        )
+
     spatial_knn_graph(adata)
     return adata
 

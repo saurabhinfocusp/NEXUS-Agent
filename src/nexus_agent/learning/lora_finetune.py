@@ -205,7 +205,7 @@ def _fetch_cell_type_corrections(conn: psycopg.Connection) -> list[dict[str, Any
     return [{"claim_id": r[0], "corrected_value": r[1], "run_id": r[2]} for r in rows]
 
 
-def _latest_fused_embedding(
+def latest_fused_embedding(
     dsn: str, run_id: uuid.UUID, claim_id: str, fusion_space_id: str
 ) -> list[float] | None:
     """Most recent `provenance_log.fused_embedding` for `(run_id, claim_id)`
@@ -262,7 +262,7 @@ def run_finetune_cycle(
     fused_embeddings: list[list[float]] = []
     labels: list[str] = []
     for corr in corrections:
-        embedding = _latest_fused_embedding(dsn, corr["run_id"], corr["claim_id"], fusion_space_id)
+        embedding = latest_fused_embedding(dsn, corr["run_id"], corr["claim_id"], fusion_space_id)
         if embedding is None:
             continue
         fused_embeddings.append(embedding)
