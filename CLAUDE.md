@@ -9,7 +9,9 @@ image + spatial expression data in, evidence-backed biological report out).
 [CONSTITUTION.md](CONSTITUTION.md) is the binding design spec — when a
 choice in this codebase looks unusual, check there before "fixing" it.
 [ROADMAP.md](ROADMAP.md) tracks what's real vs. disclosed scope reduction
-per phase; Phases 0-5 are implemented.
+per phase; Phases 0-5 are implemented, and its "Post-Phase-5 additions"
+section covers what landed afterwards (QC/Spatial/Biology agents, the
+webapp, CI) plus the list of known open work.
 
 ## Commands
 
@@ -51,6 +53,11 @@ There is no CLI and no lint/format tooling configured — the graph is
 invoked directly from Python (see README.md's "Running a task") or through
 the webapp's HTTP surface.
 
+CI (`.github/workflows/tests.yml`) runs only the fast suite, on pushes to
+`main` and on pull requests. The integration suite is never run in CI —
+run it locally against `docker compose up -d` before trusting a change to
+anything Postgres/S3/model-backed.
+
 `--reload`'s graceful shutdown waits for in-flight `BackgroundTasks`
 before restarting -- editing a `.py` file while a real pipeline run is
 executing (`webapp/pipeline_runner.py::run_pipeline_job`, real CPU
@@ -64,19 +71,38 @@ on `webapp/` against a real upload instead of the fast synthetic-stub path.
 ### The graph is the source of truth for control flow
 
 `graph/build.py::build_graph()` assembles a LangGraph `StateGraph`:
-Coordinator → (Vision and/or Analyst, per `subtask_plan`) → Critic →
-`report` / `human_review` / back to the vetoed agent. All three routers
-(`_coordinator_router`, `_vision_router`, `_critic_router`) are plain
-functions reading `RunState` — read them before touching routing, rather
-than inferring flow from agent code alone:
+Coordinator → QC (real path only) → Vision and/or Analyst (per
+`subtask_plan`) → Spatial and/or Biology (opt-in) → Critic → `report` /
+`human_review` / back to the vetoed agent. All six routers
+(`_coordinator_router`, `_qc_router`, `_vision_router`, `_analyst_router`,
+`_spatial_router`, `_critic_router`) are plain functions reading
+`RunState` — read them before touching routing, rather than inferring flow
+from agent code alone:
 
-- Coordinator's edge picks `state["subtask_plan"][0]`.
+- Coordinator's edge picks `state["subtask_plan"][0]` — QC whenever a real
+  data URI is set, else Vision/Analyst. The stub path never plans QC.
+- QC is a raw-data gate, not a claim producer, so it never goes through
+  Critic: `qc_verdict == "fail"` routes straight to `human_review`,
+  anything else continues to Vision/Analyst.
 - Vision's edge goes to Analyst only if Analyst is also in the plan, else
   straight to Critic — Vision and Analyst never both dead-end separately.
-- Critic's edge is the only path to a terminal node: `pass` → `report`,
-  `escalate` → `human_review`, `veto` → back to `state["history"][-2]
-  .from_agent` (the agent whose output Critic just rejected), never to a
-  terminal node directly.
+- Analyst's edge goes to Spatial, else Biology, else Critic, depending on
+  `AnalyticalGoal.run_spatial_analysis`/`run_enrichment_analysis` (both
+  default off); Spatial's edge goes to Biology or Critic the same way.
+- Critic's edge is the only path from a claim producer to a terminal node:
+  `pass` → `report`, `escalate` → `human_review`, `veto` → back to
+  `state["history"][-2].from_agent` (the agent whose output Critic just
+  rejected), never to a terminal node directly.
+
+Two consequences of that shape that are easy to get wrong:
+
+- `human_review` has two ways in (Critic's `escalate`, QC's `fail`), and
+  only the first has Critic's envelope last in `history`. Use
+  `graph/build.py::escalated_message` rather than indexing `history[-2]`.
+- Vetoes are capped: after `agents/critic.py::MAX_VETOES_PER_AGENT` vetoes
+  of the same agent in one run, Critic escalates instead. Real-path agents
+  recompute a deterministic result on retry, so an uncapped veto would loop
+  until LangGraph's recursion limit.
 
 Two nodes (`_report_node`, `_human_review_node`) and the
 `_with_message_logging` wrapper around every agent node all gate real work
@@ -95,8 +121,9 @@ the LangGraph run; the Redis bus is a validated-envelope primitive that
 exists independently. Don't assume a message crossing agents implies a
 Redis round-trip.
 
-Every agent module under `agents/` (`coordinator.py`, `vision.py`,
-`analyst.py`, `critic.py`) follows the same shape: a `*_node(state) ->
+Every agent module under `agents/` (`coordinator.py`, `qc.py`,
+`vision.py`, `analyst.py`, `spatial.py`, `biology.py`, `critic.py`)
+follows the same shape: a `*_node(state) ->
 dict` function returning a partial `RunState` update (LangGraph merges it),
 building its outgoing `MessageEnvelope`s via `agents/common.py
 ::build_envelope`. `agents/common.py` also holds the stub/retry
@@ -105,6 +132,28 @@ immediately preceding message is Critic vetoing this agent) and
 `resolve_stub_confidence` (retry-after-veto confidence beats the
 test-only `stub_confidence_override`, which only affects the first
 attempt).
+
+Analyst, Spatial and Biology are the claim producers
+(`agents/critic.py::CLAIM_PRODUCERS`); all three put their claims under
+`payload["claims"]` with the claim's id in `cell_id` (Biology reuses that
+key for the pathway/term id). Two helpers in `agents/common.py` exist
+because reading those claims naively is wrong:
+
+- `latest_message_from(state, agent)` — after a veto the agent's rejected
+  first attempt is still in `history`; a forward `next(...)` scan picks up
+  the vetoed claims instead of the retry's.
+- `evidence_claim_id(agent, raw_id)` — the key a claim's `xai_evidence`
+  bundle is stored and fetched under. Analyst ids are used as-is (the
+  correction API and `provenance_log` key on them); Spatial's and Biology's
+  are prefixed (`spatial:<id>`, `biology:<id>`) because Spatial's per-cell
+  ids can equal Analyst's.
+
+Critic builds evidence for every claim producer's latest claims on a
+`pass`, not just the message it reviewed, and
+`graph/build.py::collect_report_claims` gathers the same set for the
+report — keep those two in step, or evidence gets stored under ids the
+report never looks up. Heatmap/SHAP apply to Analyst's per-cell claims
+only; Spatial/Biology claims get the literature artifact.
 
 ### Real vs. stub dual path
 
@@ -140,7 +189,11 @@ so the static frontend only ever talks to one server:
    the real pipeline off via FastAPI `BackgroundTasks`
    (`webapp/pipeline_runner.py`) since real CPU inference takes minutes
    and must not block the request, and polls `pipeline_runs`
-   (`webapp/runs.py`) for status.
+   (`webapp/runs.py`) for status. `pipeline_runs.verdict` is Critic's
+   verdict, or `qc_fail` when QC rejected the sample before Critic ran
+   (`pipeline_runner.py::summarize_result`); `claims` is Analyst's claims
+   only, since it feeds the reviewer-correction form — Spatial/Biology
+   findings reach the user through `report_html`.
 2. `GET /api/artifacts/heatmap` — proxies a stored heatmap's `s3://` URI
    into a real `image/png`, since `report/build.py`'s rendered
    `report_html` embeds the raw object-store URI no browser can load;
@@ -194,4 +247,16 @@ never touches another run's polling.
 instance, `.env`-backed (see `.env.example`), consumed directly by
 whatever module needs a DSN/endpoint — there's no dependency injection
 layer. `settings.postgres_dsn` is the assembled connection string used
-everywhere Postgres is touched.
+everywhere Postgres is touched. `settings.nexus_device` (`NEXUS_DEVICE`,
+default `cpu`) selects the torch device for Vision's CellPose and
+VGG16/DINOv2 inference only — the fusion transformer, the fine-tune loop
+and Grad-CAM++ do not read it yet.
+
+### Best-effort persistence logs, it doesn't raise
+
+Dashboard/evidence/escalation writes (`_with_message_logging`,
+`_human_review_node`, Critic's evidence bundles, QC's plot upload) are
+deliberately wrapped so a Postgres/S3 failure never fails the run — but
+each one logs a `logger.warning(..., exc_info=True)`. Keep that when adding
+another best-effort write; a bare `except Exception: pass` here means a
+run silently finishes with missing evidence.

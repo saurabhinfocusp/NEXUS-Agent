@@ -1,6 +1,6 @@
 # NEXUS-Agent Work Plan
 
-**Status:** Phase 0–5 implemented (see per-phase status notes below) — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
+**Status:** Phase 0–5 implemented (see per-phase status notes below), plus the post-Phase-5 additions and open-work list further down — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
 **Team assumption:** small (1–3 generalists), work is mostly sequential with
 parallelization called out where it pays off once foundations exist.
 **Sizing:** relative effort per task — `S` (days), `M` (~1–2 weeks solo),
@@ -354,8 +354,9 @@ run confirmed, since it exercised Phase 4 and Phase 5 together end-to-end.
 ### Steps
 
 - [x] `L` Expert correction interface (`review/correction.py` +
-      `review/api.py`): a FastAPI API layer (no rendered frontend — this
-      repo has no UI code anywhere; confirmed as the right scope), lets a
+      `review/api.py`): a FastAPI API layer (no rendered frontend at the
+      time this phase closed; the upload-and-view webapp added afterwards —
+      see "Post-Phase-5 additions" — now drives it from a browser), lets a
       reviewer `POST /corrections` a `{field: cell_type|spatial_domain|
       interpretation, original_value, corrected_value, reviewer, reason,
       tissue_type}` correction. Writes straight into the Phase 0
@@ -449,6 +450,137 @@ correction → `run_finetune_cycle` → `promote_checkpoint` → fresh
 cell's corrected label, and `pytest tests/ -q` still shows 78 passed, 32
 skipped, 0 failed (fast suite unaffected, no Postgres touched on the stub
 path).
+
+---
+
+## Post-Phase-5 additions
+
+*Not Article XI phases. Work that landed after Phase 5 closed, recorded
+here so this file stays the place to check what is real. The per-phase
+notes above describe the code as it stood when each phase closed and are
+not rewritten.*
+
+### Specialist agents (Art. III §4)
+
+Art. III §4 allows specialist agents beyond the original four without an
+amendment, provided they respect §§1–3.
+
+- [x] QC agent (`agents/qc.py`): raw-data quality gate ahead of
+      Vision/Analyst, planned by Coordinator only when a real data URI is
+      set. Scanpy `calculate_qc_metrics` on the expression side,
+      Laplacian-variance focus plus Otsu tissue coverage on the image side.
+      Not a claim producer, so it does not route through Critic: a `fail`
+      verdict goes straight to `human_review`. Thresholds are new
+      engineering values, not Article XII numbers.
+- [x] Spatial Transcriptomics agent (`agents/spatial.py`), opt-in via
+      `AnalyticalGoal.run_spatial_analysis`: Squidpy `nhood_enrichment`,
+      `co_occurrence` and Moran's I, emitting per-cell niche claims that
+      route through Critic. **Disclosure:** every real-path claim carries
+      the same fixed confidence (`SPATIAL_REAL_CLAIM_CONFIDENCE`), not a
+      computed one.
+- [x] Biology (Enrichment) agent (`agents/biology.py`), opt-in via
+      `AnalyticalGoal.run_enrichment_analysis`: Enrichr via `gseapy`,
+      g:Profiler, and a STRING REST call, emitting pathway claims that
+      route through Critic. Needs network access at run time.
+- **Scope reduction (deliberate):** none of these run FastQC, STARsolo,
+  Cell Ranger, Seurat or Giotto — the repo ingests no FASTQ and has no R
+  interop. See CLAUDE.md for the rationale.
+
+### Upload-and-view webapp
+
+- [x] `webapp/`: FastAPI plus a static frontend on one origin — upload a
+      sample, run the real pipeline as a background task, poll
+      `pipeline_runs`, view the report, submit corrections through the
+      mounted `/review` API. Accepts `.h5ad`, `.loom`, 10x `.h5` and 10x
+      mtx bundles (`webapp/uploads.py`).
+- **Not done:** the webapp always requests both modalities and has no
+  control for the Spatial/Biology flags, and it does not show QC's report
+  or plot.
+
+### Device selection
+
+- [x] `settings.nexus_device` (`NEXUS_DEVICE`, default `cpu`) moves
+      Vision's CellPose and VGG16/DINOv2 inference to another torch
+      device. **Partial:** the fusion transformer, fine-tune loop and
+      Grad-CAM++ still run on CPU regardless. Not exercised on a GPU.
+- [x] Analyst and Spatial raise an actionable error when the expression
+      data has no `obsm["spatial"]` and its row count differs from Vision's
+      cell count, instead of failing inside AnnData. This makes the missing
+      cross-modal registration explicit; it does not implement it.
+
+### Control-flow and evidence fixes (2026-11-17)
+
+Found by code review, not by a failing run. Each is pinned by
+`tests/test_graph_regressions.py` (fast suite, Postgres/S3 monkeypatched).
+**Not verified against the integration suite or a real pipeline run.**
+
+- [x] `human_review` recorded Coordinator's plan instead of QC's report
+      when QC's `fail` gate bypassed Critic (`graph/build.py::
+      escalated_message`).
+- [x] A QC-rejected run showed as `done` / `unknown` in the webapp; it now
+      stores the verdict `qc_fail`.
+- [x] Spatial and Biology claims never reached the report
+      (`graph/build.py::collect_report_claims`; `report/build.py` renders
+      them as `niche_enrichment` / `pathway_enrichment`).
+- [x] With Spatial or Biology in the plan, Analyst's claims reached the
+      report with no evidence, because Critic built bundles only for the
+      message it reviewed last. Critic now covers every claim producer's
+      latest claims. Spatial/Biology bundles are stored under prefixed ids
+      (`agents/common.py::evidence_claim_id`); they get the literature
+      artifact only, not a heatmap or SHAP.
+- [x] Veto cap (Art. IV §3): after `MAX_VETOES_PER_AGENT` (2) vetoes of
+      the same agent in one run, Critic escalates rather than re-routing
+      again. New engineering value, not an Article XII number.
+- [x] Best-effort persistence failures (message log, escalation, evidence
+      store, evidence fetch, QC plot) are logged instead of swallowed.
+
+### CI
+
+- [x] `.github/workflows/tests.yml` runs the fast suite on pushes to `main`
+      and on pull requests. The integration suite is not run in CI. There
+      is still no lint, format or type-check step.
+
+### Known open work
+
+Beyond the scope reductions disclosed per phase above (StarDist, DINOv2
+attention rollout, starter literature corpus, hashing embedder, the
+refiner-not-LoRA fine-tune path) and the Art. VIII checklist below:
+
+**Scientific core**
+
+- [ ] Cross-modal registration (Art. XII §1). Fusion requires Vision's
+      cell count to equal the expression row count, which real
+      Visium/HEST samples do not satisfy; `data/container.py::
+      check_registration` is not called by the pipeline.
+- [ ] The fusion transformer is still untrained (fixed-seed random
+      weights).
+- [ ] No cell typing until a reviewer correction has been fine-tuned and
+      promoted; Analyst never sets `spatial_domain`.
+- [ ] Vision (0.8), Analyst (0.7) and Spatial (0.65) report constant
+      confidences on the real path, so Critic's review is a threshold on a
+      constant. Critic has no consistency checks beyond that.
+- [ ] Nothing triggers the fine-tune loop: `should_trigger_finetune` and
+      `run_finetune_cycle` have no scheduler or endpoint calling them.
+
+**Webapp and operations**
+
+- [ ] No authentication; the corrections API accepts any `reviewer`
+      string. No upload size limit (uploads are read fully into memory).
+- [ ] `GET /api/artifacts/heatmap` loads any `s3://` URI it is given; it
+      should be restricted to the run's own prefix.
+- [ ] Runs execute in in-process `BackgroundTasks`: a restart leaves rows
+      stuck in `running`, and there is no concurrency limit, stale-run
+      recovery or cancellation.
+- [ ] Critic's evidence loop builds a new `Vgg16Embedder`, re-fetches the
+      image and refits PCA per claim; per-cell SHAP will not scale to
+      thousands of cells.
+- [ ] The Redis bus (`bus/client.py`) is implemented but nothing in the
+      graph uses it.
+
+**Project hygiene**
+
+- [ ] No CLI entry point, Dockerfile, or schema migration tooling
+      (`db/schema.sql` is applied whole).
 
 ---
 

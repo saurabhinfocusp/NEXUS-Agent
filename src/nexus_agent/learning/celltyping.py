@@ -33,6 +33,7 @@ import torch
 from torch import nn
 
 from nexus_agent.analyst.fusion import FUSED_DIM
+from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID
 from nexus_agent.data.object_store import get_bytes
 
 
@@ -52,9 +53,17 @@ def save_checkpoint(
     classifier: CellTypeClassifier,
     label_map: dict[int, str],
     refiner: nn.Module | None,
+    *,
+    fusion_base_id: str = FIXED_SEED_BASE_ID,
 ) -> bytes:
-    """Serialize `classifier` + `label_map` (+ optional `refiner`) to bytes."""
+    """Serialize `classifier` + `label_map` (+ optional `refiner`) to bytes.
+
+    `fusion_base_id` names the fusion base whose embeddings the head was
+    trained on (`analyst/pretrain.py`). A head is meaningless on any other
+    base's embeddings, so the id is stored and checked before use.
+    """
     payload: dict[str, Any] = {
+        "fusion_base_id": fusion_base_id,
         "label_map": label_map,
         "classifier_state": classifier.state_dict(),
         "refiner_state": refiner.state_dict() if refiner is not None else None,
@@ -62,6 +71,14 @@ def save_checkpoint(
     buffer = io.BytesIO()
     torch.save(payload, buffer)
     return buffer.getvalue()
+
+
+def checkpoint_fusion_base_id(data: bytes) -> str:
+    """The fusion base a checkpoint was trained on. Checkpoints written
+    before base ids existed were all trained on the fixed-seed base.
+    """
+    payload = torch.load(io.BytesIO(data), weights_only=False)
+    return payload.get("fusion_base_id", FIXED_SEED_BASE_ID)
 
 
 def load_checkpoint(data: bytes) -> tuple[CellTypeClassifier, nn.Module | None, dict[int, str]]:
@@ -94,19 +111,42 @@ def predict_cell_type(
     the first fine-tuning cycle has produced (and been promoted for) a
     checkpoint.
     """
+    return predict_cell_types([fused_embedding], checkpoint_bytes)[0][0]
+
+
+def predict_cell_types(
+    fused_embeddings: list[list[float]] | np.ndarray,
+    checkpoint_bytes: bytes | None,
+) -> list[tuple[str | None, float | None]]:
+    """Batch `predict_cell_type`, returning `(label, probability)` per cell.
+    `probability` is the classifier's softmax probability for the label it
+    chose -- the model's own confidence in that call. `(None, None)` for
+    every cell when no checkpoint is available: no call was made, so there
+    is no confidence to report.
+
+    The probability is uncalibrated (no temperature scaling against held-out
+    data), and a head trained on few corrections can be confidently wrong
+    about cells unlike any it was corrected on.
+    """
+    n_cells = len(fused_embeddings)
     if checkpoint_bytes is None:
-        return None
+        return [(None, None)] * n_cells
+    if n_cells == 0:
+        return []
 
     classifier, refiner, label_map = load_checkpoint(checkpoint_bytes)
 
     with torch.inference_mode():
-        x = torch.tensor(np.asarray(fused_embedding, dtype=np.float32), dtype=torch.float32).unsqueeze(0)
+        x = torch.tensor(np.asarray(fused_embeddings, dtype=np.float32), dtype=torch.float32)
         if refiner is not None:
             x = refiner(x)
-        logits = classifier(x)
-        predicted_idx = int(torch.argmax(logits, dim=-1).item())
+        probabilities = torch.softmax(classifier(x), dim=-1)
+        top_probability, top_idx = probabilities.max(dim=-1)
 
-    return label_map.get(predicted_idx)
+    return [
+        (label_map.get(int(idx)), float(prob))
+        for idx, prob in zip(top_idx.tolist(), top_probability.tolist())
+    ]
 
 
 def latest_promoted_checkpoint_uri(dsn: str) -> str | None:

@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     # CellPose error at model-load time, not a silently-ignored setting.
     nexus_device: str = "cpu"
 
+    # Object-store URI of a pretrained fusion base (`analyst/pretrain.py::
+    # save_fusion_base` bytes). Unset (the default): Analyst uses the
+    # fixed-seed untrained base. Changing this changes the coordinate space
+    # of every fused embedding, so cell-type checkpoints trained under
+    # another base stop being applied (see learning/celltyping.py).
+    fusion_checkpoint_uri: str | None = None
+
     @property
     def postgres_dsn(self) -> str:
         return (

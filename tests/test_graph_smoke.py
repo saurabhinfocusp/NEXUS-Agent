@@ -33,6 +33,34 @@ def _config(run_id: uuid.UUID) -> dict:
     return {"configurable": {"thread_id": str(run_id)}}
 
 
+def _spatially_structured_adata():
+    """Two expression programs occupying two separate tissue regions, so a
+    cell's spatial neighbours share its niche. Spatial's confidence is
+    measured from exactly that agreement (agents/spatial.py), so spatially
+    random data would -- correctly -- score low and be vetoed rather than
+    pass; these routing tests need a sample that deserves to pass.
+    """
+    import numpy as np
+    import pandas as pd
+    from anndata import AnnData
+
+    rng = np.random.default_rng(0)
+    n_per_region, n_genes = 8, 20
+    left = rng.poisson(5, size=(n_per_region, n_genes))
+    right = rng.poisson(5, size=(n_per_region, n_genes))
+    left[:, : n_genes // 2] += 80  # program A
+    right[:, n_genes // 2 :] += 80  # program B
+    adata = AnnData(
+        X=np.vstack([left, right]).astype(np.float32),
+        obs=pd.DataFrame(index=[f"cell_{i}" for i in range(2 * n_per_region)]),
+        var=pd.DataFrame(index=[f"GENE{i}" for i in range(n_genes)]),
+    )
+    adata.obsm["spatial"] = np.vstack(
+        [rng.random((n_per_region, 2)) * 10, rng.random((n_per_region, 2)) * 10 + 1000]
+    )
+    return adata
+
+
 def test_happy_path_flows_through_all_four_agents_to_report():
     graph = compile_with_memory()
     run_id = uuid.uuid4()
@@ -192,12 +220,7 @@ def test_run_spatial_analysis_flag_routes_analyst_through_spatial_before_critic(
     import pandas as pd
     from anndata import AnnData
 
-    rng = np.random.default_rng(0)
-    adata = AnnData(
-        X=rng.poisson(50, size=(6, 20)).astype(np.float32),
-        obs=pd.DataFrame(index=[f"cell_{i}" for i in range(6)]),
-    )
-    adata.obsm["spatial"] = rng.random((6, 2)) * 100
+    adata = _spatially_structured_adata()
     monkeypatch.setattr("nexus_agent.data.object_store.get_anndata", lambda uri: adata)
     monkeypatch.setattr("nexus_agent.data.object_store.put_bytes", lambda key, data: "s3://fake/qc_plot.png")
 
@@ -310,13 +333,7 @@ def test_both_spatial_and_enrichment_flags_chain_analyst_spatial_biology_critic(
     import pandas as pd
     from anndata import AnnData
 
-    rng = np.random.default_rng(0)
-    adata = AnnData(
-        X=rng.poisson(50, size=(6, 20)).astype(np.float32),
-        obs=pd.DataFrame(index=[f"cell_{i}" for i in range(6)]),
-        var=pd.DataFrame(index=[f"GENE{i}" for i in range(20)]),
-    )
-    adata.obsm["spatial"] = rng.random((6, 2)) * 100
+    adata = _spatially_structured_adata()
     monkeypatch.setattr("nexus_agent.data.object_store.get_anndata", lambda uri: adata)
     monkeypatch.setattr("nexus_agent.data.object_store.put_bytes", lambda key, data: "s3://fake/qc_plot.png")
     _patch_biology_network_backends(monkeypatch)

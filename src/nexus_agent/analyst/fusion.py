@@ -69,11 +69,17 @@ def fuse(
     *,
     expression_pca_dim: int = 50,
     model: GraphFusionTransformer | None = None,
+    expression_features: np.ndarray | None = None,
 ) -> list[FusedCellRecord]:
     """`vision_cells` (VisionCellRecord-like, with `.cell_id`/`.embedding_vector`
     or the equivalent dict keys) must be 1:1 row-aligned with `adata.obs`.
     `adata` must already have `spatial_knn_graph()` applied (Art. XII §3's
     k-NN edges live in `adata.obsp["spatial_connectivities"]`).
+
+    `expression_features` ((n_cells, expression_pca_dim)) replaces the
+    default per-sample PCA. A pretrained `model` must be given the features
+    of the projector it was trained with (`analyst/pretrain.py`) -- a PCA
+    refitted on this sample would be a different coordinate system.
     """
     if adata.n_obs != len(vision_cells):
         raise ValueError(f"vision_cells ({len(vision_cells)}) and adata.obs ({adata.n_obs}) must be 1:1 aligned")
@@ -82,7 +88,14 @@ def fuse(
         return getattr(cell, key) if hasattr(cell, key) else cell[key]
 
     morphology = np.stack([np.asarray(_get(c, "embedding_vector"), dtype=np.float64) for c in vision_cells])
-    pca = expression_pca(adata, n_comps=expression_pca_dim)
+    if expression_features is None:
+        pca = expression_pca(adata, n_comps=expression_pca_dim)
+    else:
+        pca = np.asarray(expression_features, dtype=np.float64)
+        if pca.shape != (adata.n_obs, expression_pca_dim):
+            raise ValueError(
+                f"expression_features has shape {pca.shape}, expected ({adata.n_obs}, {expression_pca_dim})"
+            )
     node_features = torch.tensor(np.concatenate([morphology, pca], axis=1), dtype=torch.float32)
 
     adjacency_sparse = adata.obsp["spatial_connectivities"]

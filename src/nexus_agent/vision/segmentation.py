@@ -36,11 +36,42 @@ def segment_cells(image: np.ndarray, *, model_type: str = "cyto3", diameter: flo
     unified checkpoint, not a standalone cyto3-specific one. Disclosed here
     rather than silently implying a smaller/different model actually runs.
     """
+    masks, _cell_probability = segment_cells_with_probability(image, model_type=model_type, diameter=diameter)
+    return masks
+
+
+def segment_cells_with_probability(
+    image: np.ndarray, *, model_type: str = "cyto3", diameter: float | None = None
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """`segment_cells`, plus CellPose's per-pixel cell probability
+    ((H, W), in [0, 1]) -- the network's own estimate that a pixel belongs
+    to a cell, which `cell_confidences` turns into a per-cell segmentation
+    confidence. The second element is None if this CellPose build doesn't
+    return a probability map of the image's shape; callers must treat that
+    as "confidence not measured", not as a confident result.
+    """
     from nexus_agent.shared.config import settings
 
     model = get_cellpose_model(model_type=model_type, gpu=settings.nexus_device != "cpu")
-    masks, _flows, _styles = model.eval(image, diameter=diameter)
-    return masks
+    masks, flows, _styles = model.eval(image, diameter=diameter)
+
+    cell_probability = None
+    # CellPose returns `flows = [flow_rgb, dP, cellprob, ...]`; `cellprob` is
+    # the pre-sigmoid logit map.
+    if len(flows) > 2 and getattr(flows[2], "shape", None) == masks.shape:
+        cell_probability = 1.0 / (1.0 + np.exp(-np.asarray(flows[2], dtype=np.float64)))
+    return masks, cell_probability
+
+
+def cell_confidences(label_mask: np.ndarray, cell_probability: np.ndarray) -> dict[str, float]:
+    """Mean cell probability inside each cell's mask, keyed by the same
+    `cell_id` `cells_from_mask` assigns. A cell CellPose only barely
+    accepted scores near its 0.5 acceptance boundary; a crisp one near 1.
+    """
+    return {
+        f"cell-{region.label}": float(np.clip(cell_probability[tuple(region.coords.T)].mean(), 0.0, 1.0))
+        for region in regionprops(label_mask)
+    }
 
 
 def stardist_segment(image: np.ndarray, **kwargs) -> np.ndarray:

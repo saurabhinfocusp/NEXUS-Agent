@@ -18,6 +18,8 @@ representation rather than a hardcoded confidence.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 import torch
 from pydantic import BaseModel, Field
@@ -53,6 +55,31 @@ def _fixed_seed_fusion_model():
         return GraphFusionTransformer(morphology_dim=EMBEDDING_DIM, expression_pca_dim=50)
     finally:
         torch.random.set_rng_state(rng_state)
+
+
+@lru_cache(maxsize=2)
+def _load_pretrained_base(uri: str):
+    from nexus_agent.analyst.pretrain import load_fusion_base
+    from nexus_agent.data.object_store import get_bytes
+
+    return load_fusion_base(get_bytes(uri))
+
+
+def active_fusion_base():
+    """`(model, projector_or_None, base_id)` for the fusion base this
+    deployment runs: the pretrained base at `settings.fusion_checkpoint_uri`
+    when one is configured, else the fixed-seed untrained base (no
+    projector -- `fuse()` falls back to its per-sample PCA). Analyst's
+    predictions, Critic's SHAP explanations and the fine-tune loop must all
+    use this one base; `base_id` is how they check they agree.
+    """
+    from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID
+    from nexus_agent.shared.config import settings
+
+    if settings.fusion_checkpoint_uri:
+        base = _load_pretrained_base(settings.fusion_checkpoint_uri)
+        return base.model, base.projector, base.base_id
+    return _fixed_seed_fusion_model(), None, FIXED_SEED_BASE_ID
 
 
 class AnalystClaim(BaseModel):
@@ -128,40 +155,86 @@ def _ingest_and_fuse(state: RunState, expression_uri: str, vision_ran: bool):
 
     from nexus_agent.analyst.fusion import fuse
 
-    fused_records = fuse(vision_cells, adata, model=_fixed_seed_fusion_model())
+    fusion_model, projector, fusion_base_id = active_fusion_base()
+    base_reasoning = [f"fusion base: {fusion_base_id}"]
+    expression_features = None
+    if projector is not None:
+        coverage = projector.gene_coverage(adata.var_names)
+        expression_features = projector.transform(adata)
+        base_reasoning.append(
+            f"{coverage:.0%} of the pretrained base's {len(projector.gene_names)} genes are present in this sample; "
+            "missing genes are imputed at their training mean"
+        )
+    else:
+        base_reasoning.append("untrained fixed-seed weights: the fused representation carries no learned biology")
+    fused_records = fuse(vision_cells, adata, model=fusion_model, expression_features=expression_features)
 
     # Phase 5 (Art. XII §6): predict cell_type from the latest *promoted*
     # fine-tune checkpoint, if one exists yet. Falls back to None (today's
     # Phase 3 placeholder behavior) before the first correction-driven
     # fine-tune cycle has been promoted -- there is nothing to predict with.
-    from nexus_agent.learning.celltyping import latest_promoted_checkpoint_bytes, predict_cell_type
+    from nexus_agent.analyst.domains import assign_domains
+    from nexus_agent.learning.celltyping import (
+        checkpoint_fusion_base_id,
+        latest_promoted_checkpoint_bytes,
+        predict_cell_types,
+    )
     from nexus_agent.shared.config import settings as _settings
 
+    reasoning = [
+        f"fused {len(fused_records)} cell(s) from Vision + expression data ({expression_uri}) (Art. V §1: not provisional)",
+        *base_reasoning,
+    ]
+
+    fused_matrix = np.array([r.fused_embedding for r in fused_records], dtype=np.float64)
+    domains, domain_confidence, domain_reasoning = assign_domains(fused_matrix)
+    reasoning.extend(domain_reasoning)
+
     checkpoint_bytes = latest_promoted_checkpoint_bytes(_settings.postgres_dsn)
+    if checkpoint_bytes is not None and checkpoint_fusion_base_id(checkpoint_bytes) != fusion_base_id:
+        reasoning.append(
+            f"the promoted cell-type checkpoint was trained on fusion base "
+            f"{checkpoint_fusion_base_id(checkpoint_bytes)}, not the active {fusion_base_id}; it is not "
+            "applied, so no cell type is called until a checkpoint is fine-tuned and promoted on this base"
+        )
+        checkpoint_bytes = None
+    cell_types = predict_cell_types(fused_matrix, checkpoint_bytes)
+    if checkpoint_bytes is not None:
+        reasoning.append(
+            "cell_type predicted from the latest promoted Phase 5 fine-tune checkpoint (Art. XII §6); "
+            "its confidence is the classifier's softmax probability for the chosen label (uncalibrated)"
+        )
+
+    # A claim asserts everything it carries, so its confidence is that of
+    # its weakest part: the domain assignment and, when a cell type was
+    # called, that call too.
     claims = [
         AnalystClaim(
             cell_id=r.cell_id,
-            cell_type=predict_cell_type(r.fused_embedding, checkpoint_bytes),
-            confidence=0.7,
+            cell_type=cell_type,
+            spatial_domain=domain,
+            confidence=float(min(d_conf, type_conf) if type_conf is not None else d_conf),
             provisional=False,
         )
-        for r in fused_records
+        for r, domain, d_conf, (cell_type, type_conf) in zip(fused_records, domains, domain_confidence, cell_types)
     ]
-    reasoning = [
-        f"fused {len(fused_records)} cell(s) from Vision + expression data ({expression_uri}) (Art. V §1: not provisional)"
-    ]
-    if checkpoint_bytes is not None:
-        reasoning.append("cell_type predicted from the latest promoted Phase 5 fine-tune checkpoint (Art. XII §6)")
+    confidence = float(np.mean([c.confidence for c in claims]))
+    reasoning.append(
+        f"per-claim confidence = min(domain, cell-type) confidence; mean {confidence:.2f}, "
+        f"min {min(c.confidence for c in claims):.2f} across {len(claims)} claim(s)"
+    )
     provenance_records = [
         {
             "claim_id": r.cell_id,
             "source_image_region": r.source_image_region,
-            "source_expression_profile": r.source_expression_profile,
+            # The base id travels with the embedding: the fine-tune loop
+            # may only train on embeddings from the base it will be used with.
+            "source_expression_profile": {**r.source_expression_profile, "fusion_base_id": fusion_base_id},
             "fused_embedding": r.fused_embedding,
         }
         for r in fused_records
     ]
-    return claims, 0.7, reasoning, provenance_records
+    return claims, confidence, reasoning, provenance_records
 
 
 def _record_provenance(state: RunState, provenance_records: list[dict]) -> None:

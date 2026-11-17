@@ -73,6 +73,7 @@ from pydantic import BaseModel
 from torch import nn
 
 from nexus_agent.analyst.fusion import FUSED_DIM
+from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID
 from nexus_agent.data.object_store import put_bytes
 from nexus_agent.data.provenance import fetch_provenance
 from nexus_agent.learning.celltyping import CellTypeClassifier, save_checkpoint
@@ -147,6 +148,56 @@ def label_string(corrected_value: Any) -> str:
     return str(corrected_value)
 
 
+def train_celltype_head(
+    fused_embeddings: list[list[float]],
+    labels: list[str],
+    *,
+    epochs: int = 20,
+    lr: float = 1e-2,
+    seed: int | None = None,
+) -> tuple[CellTypeClassifier, nn.Linear, dict[int, str], float | None]:
+    """Train the refiner + cell-type head on `(fused_embedding, label)`
+    pairs -- the training step of `run_finetune_cycle`, separated from its
+    Postgres/object-store I/O so `benchmark/governance.py` can measure what
+    a given number of corrections buys using the exact procedure production
+    runs. Returns `(classifier, refiner, label_map, final_train_loss)`.
+
+    `seed` fixes the classifier's initialization for reproducible
+    benchmarks; `run_finetune_cycle` leaves it unset, as before.
+    """
+    label_map: dict[int, str] = dict(enumerate(sorted(set(labels))))
+    label_to_idx = {label: idx for idx, label in label_map.items()}
+
+    X = torch.tensor(fused_embeddings, dtype=torch.float32)
+    y = torch.tensor([label_to_idx[label] for label in labels], dtype=torch.long)
+
+    rng_state = torch.random.get_rng_state()
+    try:
+        if seed is not None:
+            torch.manual_seed(seed)
+        refiner = nn.Linear(FUSED_DIM, FUSED_DIM)
+        nn.init.eye_(refiner.weight)
+        nn.init.zeros_(refiner.bias)
+        classifier = CellTypeClassifier(num_classes=len(label_map))
+    finally:
+        if seed is not None:
+            torch.random.set_rng_state(rng_state)
+
+    optimizer = torch.optim.Adam(list(refiner.parameters()) + list(classifier.parameters()), lr=lr)
+    criterion = nn.CrossEntropyLoss()
+
+    final_loss: float | None = None
+    for _ in range(epochs):
+        logits = classifier(refiner(X))
+        loss = criterion(logits, y)
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        final_loss = float(loss.item())
+
+    return classifier, refiner, label_map, final_loss
+
+
 def _fetch_cell_type_corrections(conn: psycopg.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT claim_id, corrected_value, run_id FROM correction_log WHERE field = 'cell_type'"
@@ -154,12 +205,21 @@ def _fetch_cell_type_corrections(conn: psycopg.Connection) -> list[dict[str, Any
     return [{"claim_id": r[0], "corrected_value": r[1], "run_id": r[2]} for r in rows]
 
 
-def _latest_fused_embedding(dsn: str, run_id: uuid.UUID, claim_id: str) -> list[float] | None:
-    """Most recent `provenance_log.fused_embedding` for `(run_id, claim_id)`,
-    or `None` if there isn't one (e.g. a stub/non-fused claim).
+def _latest_fused_embedding(
+    dsn: str, run_id: uuid.UUID, claim_id: str, fusion_base_id: str
+) -> list[float] | None:
+    """Most recent `provenance_log.fused_embedding` for `(run_id, claim_id)`
+    produced under `fusion_base_id`, or `None` if there isn't one (a
+    stub/non-fused claim, or one fused under a different base -- embeddings
+    from two bases share no coordinate system and must not be mixed in one
+    training set). Rows written before base ids were recorded came from the
+    fixed-seed base.
     """
     for row in reversed(fetch_provenance(dsn, run_id)):
-        if row["claim_id"] == claim_id and row.get("fused_embedding") is not None:
+        if row["claim_id"] != claim_id or row.get("fused_embedding") is None:
+            continue
+        row_base_id = (row.get("source_expression_profile") or {}).get("fusion_base_id", FIXED_SEED_BASE_ID)
+        if row_base_id == fusion_base_id:
             return row["fused_embedding"]
     return None
 
@@ -190,13 +250,17 @@ def run_finetune_cycle(
     function assumes the caller already checked `should_trigger_finetune`
     and fails loudly rather than training on (near-)nothing.
     """
+    from nexus_agent.agents.analyst import active_fusion_base
+
+    _model, _projector, fusion_base_id = active_fusion_base()
+
     with psycopg.connect(dsn, autocommit=True) as conn:
         corrections = _fetch_cell_type_corrections(conn)
 
     fused_embeddings: list[list[float]] = []
     labels: list[str] = []
     for corr in corrections:
-        embedding = _latest_fused_embedding(dsn, corr["run_id"], corr["claim_id"])
+        embedding = _latest_fused_embedding(dsn, corr["run_id"], corr["claim_id"], fusion_base_id)
         if embedding is None:
             continue
         fused_embeddings.append(embedding)
@@ -210,34 +274,17 @@ def run_finetune_cycle(
             "run_finetune_cycle refuses to train on this little data rather than silently no-op."
         )
 
-    label_map: dict[int, str] = dict(enumerate(sorted(set(labels))))
-    label_to_idx = {label: idx for idx, label in label_map.items()}
+    classifier, refiner, label_map, final_loss = train_celltype_head(
+        fused_embeddings, labels, epochs=epochs, lr=lr
+    )
 
-    X = torch.tensor(fused_embeddings, dtype=torch.float32)
-    y = torch.tensor([label_to_idx[label] for label in labels], dtype=torch.long)
-
-    refiner = nn.Linear(FUSED_DIM, FUSED_DIM)
-    nn.init.eye_(refiner.weight)
-    nn.init.zeros_(refiner.bias)
-
-    classifier = CellTypeClassifier(num_classes=len(label_map))
-
-    optimizer = torch.optim.Adam(list(refiner.parameters()) + list(classifier.parameters()), lr=lr)
-    criterion = nn.CrossEntropyLoss()
-
-    final_loss: float | None = None
-    for _ in range(epochs):
-        logits = classifier(refiner(X))
-        loss = criterion(logits, y)
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-        final_loss = float(loss.item())
-
-    checkpoint_bytes = save_checkpoint(classifier, label_map, refiner)
+    checkpoint_bytes = save_checkpoint(classifier, label_map, refiner, fusion_base_id=fusion_base_id)
     checkpoint_uri = put_bytes(f"checkpoints/{uuid.uuid4()}/checkpoint.pt", checkpoint_bytes)
 
-    trigger_reason = f"{n_usable} usable corrections recovered from correction_log/provenance_log"
+    trigger_reason = (
+        f"{n_usable} usable corrections recovered from correction_log/provenance_log "
+        f"(fusion base {fusion_base_id})"
+    )
 
     with psycopg.connect(dsn, autocommit=True) as conn:
         row = conn.execute(

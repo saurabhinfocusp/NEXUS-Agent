@@ -127,12 +127,28 @@ def _generate_evidence_bundles(state: RunState) -> None:
         logger.warning("could not load expression data %s for SHAP evidence", expression_uri, exc_info=True)
         adata = None
 
+    # The one fusion base Analyst predicted with (weights *and* expression
+    # projection). SHAP must explain the classifier through that same base,
+    # and only a classifier trained on it -- any other pairing yields
+    # attributions for a model that was never run.
+    from nexus_agent.agents.analyst import active_fusion_base
+
+    fusion_model, projector, fusion_base_id = active_fusion_base()
+    if projector is not None and adata is not None:
+        from nexus_agent.analyst.ingestion import normalize
+
+        normalize(adata)  # the projector was fitted on log-normalized expression
+
     classifier_head = None
     try:
-        from nexus_agent.learning.celltyping import latest_promoted_checkpoint_bytes, load_checkpoint
+        from nexus_agent.learning.celltyping import (
+            checkpoint_fusion_base_id,
+            latest_promoted_checkpoint_bytes,
+            load_checkpoint,
+        )
 
         checkpoint_bytes = latest_promoted_checkpoint_bytes(settings.postgres_dsn)
-        if checkpoint_bytes is not None:
+        if checkpoint_bytes is not None and checkpoint_fusion_base_id(checkpoint_bytes) == fusion_base_id:
             import torch
 
             clf, refiner, _label_map = load_checkpoint(checkpoint_bytes)
@@ -186,29 +202,29 @@ def _generate_evidence_bundles(state: RunState) -> None:
             try:
                 from sklearn.decomposition import PCA
 
-                from nexus_agent.agents.analyst import _fixed_seed_fusion_model
                 from nexus_agent.xai.shap_explain import shap_gene_importance
 
                 cell_index = next(i for i, c in enumerate(vision_cells) if c["cell_id"] == raw_id)
                 expression_matrix = np.asarray(adata.X, dtype=np.float64)
                 target_expression = expression_matrix[cell_index]
 
-                n_comps = max(1, min(50, adata.n_obs - 1, adata.n_vars - 1))
-                pca = PCA(n_components=n_comps).fit(expression_matrix)
+                if projector is not None:
+                    var_names = list(adata.var_names)
 
-                def _pca_transform(x, _pca=pca, _n_comps=n_comps):
-                    out = _pca.transform(x)
-                    if out.shape[1] < 50:
-                        pad = np.zeros((out.shape[0], 50 - out.shape[1]))
-                        out = np.concatenate([out, pad], axis=1)
-                    return out
+                    def _pca_transform(x, _projector=projector, _var_names=var_names):
+                        return _projector.transform_matrix(x, _var_names)
 
-                # Must be the SAME fixed-seed base `agents/analyst.py` uses
-                # for real predictions -- the promoted classifier was
-                # trained against that coordinate space, so explaining it
-                # through a different (freshly random) fusion transformer
-                # would produce meaningless SHAP values.
-                fusion_model = _fixed_seed_fusion_model()
+                else:
+                    n_comps = max(1, min(50, adata.n_obs - 1, adata.n_vars - 1))
+                    pca = PCA(n_components=n_comps).fit(expression_matrix)
+
+                    def _pca_transform(x, _pca=pca, _n_comps=n_comps):
+                        out = _pca.transform(x)
+                        if out.shape[1] < 50:
+                            pad = np.zeros((out.shape[0], 50 - out.shape[1]))
+                            out = np.concatenate([out, pad], axis=1)
+                        return out
+
                 shap_top_genes = shap_gene_importance(
                     fusion_model,
                     classifier_head,

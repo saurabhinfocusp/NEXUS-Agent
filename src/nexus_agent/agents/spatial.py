@@ -25,10 +25,6 @@ from nexus_agent.graph.state import RunState
 from nexus_agent.shared.schemas import AgentName
 from nexus_agent.shared.versioning import stamp
 
-# New Phase-N engineering value (Article XII does not name a Spatial
-# confidence), same disclosure convention as agents/critic.py's thresholds.
-SPATIAL_REAL_CLAIM_CONFIDENCE = 0.65
-
 
 class SpatialClaim(BaseModel):
     """Spatial agent's per-cell output contract: which niche/domain a cell
@@ -113,6 +109,23 @@ def _assign_niches(adata) -> np.ndarray:
     return labels
 
 
+def _neighbor_agreement(adata, cluster_labels: np.ndarray) -> np.ndarray:
+    """Per-cell confidence in its niche label: the share of its spatial
+    k-NN neighbours assigned the same niche, Laplace-smoothed as
+    `(same + 1) / (neighbours + 2)` so a cell with few neighbours isn't
+    scored 0 or 1 on thin evidence. A niche is a *spatial* claim -- a cell
+    whose expression cluster disagrees with everything around it is a weak
+    member of that niche, however cleanly it clustered. A cell with no
+    neighbours scores 0.5: unassessed, not confident.
+    """
+    adjacency = adata.obsp["spatial_connectivities"]
+    adjacency = (adjacency > 0).astype(np.float64)
+    same_niche = (cluster_labels[:, None] == cluster_labels[None, :]).astype(np.float64)
+    same = np.asarray(adjacency.multiply(same_niche).sum(axis=1)).ravel()
+    total = np.asarray(adjacency.sum(axis=1)).ravel()
+    return (same + 1.0) / (total + 2.0)
+
+
 def _run_spatial_stats(state: RunState, expression_uri: str) -> tuple[list[SpatialClaim], float, list[str]]:
     import squidpy as sq
 
@@ -155,9 +168,16 @@ def _run_spatial_stats(state: RunState, expression_uri: str) -> tuple[list[Spati
     except Exception as exc:  # noqa: BLE001
         reasoning.append(f"squidpy.gr.spatial_autocorr not applicable/failed ({exc}); Moran's I omitted")
 
+    confidences = _neighbor_agreement(adata, cluster_labels)
+    reasoning.append(
+        "per-claim confidence = Laplace-smoothed share of a cell's spatial neighbours in the same niche: "
+        f"mean {confidences.mean():.2f}, min {confidences.min():.2f}"
+    )
+
     claims = []
-    for cell_name, niche in zip(adata.obs_names, adata.obs["niche"]):
+    for cell_name, niche, cell_confidence in zip(adata.obs_names, adata.obs["niche"], confidences):
         supporting_stat: dict = {
+            "neighbor_agreement": float(cell_confidence),
             "nhood_enrichment_zscore": nhood_zscore_by_niche.get(str(niche)),
             "co_occurrence_computed": co_occurrence_computed,
         }
@@ -168,11 +188,11 @@ def _run_spatial_stats(state: RunState, expression_uri: str) -> tuple[list[Spati
                 cell_id=str(cell_name),
                 niche_label=str(niche),
                 supporting_stat=supporting_stat,
-                confidence=SPATIAL_REAL_CLAIM_CONFIDENCE,
+                confidence=float(cell_confidence),
             )
         )
 
-    return claims, SPATIAL_REAL_CLAIM_CONFIDENCE, reasoning
+    return claims, float(confidences.mean()), reasoning
 
 
 def spatial_node(state: RunState) -> dict:
