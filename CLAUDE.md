@@ -265,17 +265,34 @@ at the veto cap. A real-path test that expects `pass` needs structured
 data (see `tests/test_graph_smoke.py::_spatially_structured_adata`) --
 don't "fix" such a failure by loosening the confidence.
 
-### One fusion base, identified by id
+### Morphology encoder: OmiCLIP by default
 
-`agents/analyst.py::active_fusion_base()` returns the fusion transformer,
-its expression projector and a `base_id`: the pretrained base at
-`settings.fusion_checkpoint_uri` (`analyst/pretrain.py`) or, by default,
+Vision embeds cells with `vision/embedding.py::get_embedder()`, selected by
+`settings.vision_embedder`: OmiCLIP (`vision/omiclip.py`, the default
+since Constitution v1.3), VGG16 or DINOv2. OmiCLIP's first use downloads a
+pinned 7.7 GB checkpoint, so anything that runs the real Vision path
+(integration tests, a webapp upload) pays that once. Fast tests never load
+it -- `tests/test_omiclip.py` uses a tiny randomly initialized open_clip
+CoCa model instead; `tests/test_omiclip_real.py` (integration) uses the
+real weights. Heatmaps must explain the encoder that embedded the cells:
+Critic picks Grad-CAM++ on VGG16's conv5_3 or `grad_cam_plusplus_vit` on
+OmiCLIP's last block from each cell's `embedding_model_version`.
+
+### One fusion space, identified by id
+
+`agents/analyst.py::active_fusion_base(morphology_model_version)` returns
+the fusion transformer, its expression projector and a `space_id`
+(`analyst/pretrain.py::fusion_space_id`: fusion base + morphology encoder):
+the pretrained base at `settings.fusion_checkpoint_uri` or, by default,
 the fixed-seed untrained one. Analyst's fusion, Critic's SHAP and the
-fine-tune cycle must all go through it -- fused embeddings from different
-bases share no coordinate system. The id is written to each provenance row
-and each cell-type checkpoint, and a checkpoint from another base is
-ignored rather than applied. With a pretrained base, expression features
-come from its gene-indexed projector, never from a per-sample PCA.
+fine-tune cycle must all go through it -- embeddings from different bases
+*or different encoders* share no coordinate system. The id is written to
+each provenance row and each cell-type checkpoint, and a checkpoint from
+another space is ignored rather than applied; anything written before ids
+existed is `LEGACY_FUSION_SPACE_ID` (fixed seed + VGG16). A pretrained base
+records its encoder, and Analyst raises if Vision used a different one.
+With a pretrained base, expression features come from its gene-indexed
+projector, never from a per-sample PCA.
 
 ### The LLM layer is optional and cannot make claims
 

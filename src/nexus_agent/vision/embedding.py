@@ -38,6 +38,18 @@ class EmbeddingBackend(ABC):
     def embed_patch(self, patch: np.ndarray) -> np.ndarray:
         """`patch`: (H, W, 3) uint8 RGB crop -> EMBEDDING_DIM-length float vector."""
 
+    def embed_patches(self, patches: list[np.ndarray]) -> np.ndarray:
+        """(n, EMBEDDING_DIM) for a list of crops. Backends that batch
+        (`vision/omiclip.py`) override this; the default embeds one at a time
+        on a small thread pool, as Vision always did for VGG16.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        if not patches:
+            return np.zeros((0, EMBEDDING_DIM))
+        with ThreadPoolExecutor(max_workers=min(8, len(patches))) as executor:
+            return np.stack(list(executor.map(self.embed_patch, patches)))
+
 
 class Vgg16Embedder(EmbeddingBackend):
     """Lighter-weight fallback (Art. XII §2): conv5_3 activations,
@@ -73,6 +85,35 @@ class Vgg16Embedder(EmbeddingBackend):
 def get_vgg16_embedder() -> Vgg16Embedder:
     """Return a reused VGG16 embedder instance for all uploaded-cell inference."""
     return Vgg16Embedder()
+
+
+def get_embedder() -> EmbeddingBackend:
+    """The morphology encoder this deployment uses (`settings.vision_embedder`,
+    Art. XII §2 as amended in v1.3): OmiCLIP by default, VGG16 as the
+    low-compute fallback, DINOv2 as an alternative.
+    """
+    from nexus_agent.shared.config import settings
+
+    if settings.vision_embedder == "omiclip":
+        from nexus_agent.vision.omiclip import get_omiclip_embedder
+
+        return get_omiclip_embedder()
+    if settings.vision_embedder == "dinov2":
+        return get_dinov2_embedder()
+    return get_vgg16_embedder()
+
+
+def configured_embedder_version() -> str:
+    """`model_version` of the configured embedder, without loading it."""
+    from nexus_agent.shared.config import settings
+
+    if settings.vision_embedder == "omiclip":
+        from nexus_agent.vision.omiclip import OmiclipEmbedder
+
+        return OmiclipEmbedder.model_version
+    if settings.vision_embedder == "dinov2":
+        return Dinov2Embedder.model_version
+    return Vgg16Embedder.model_version
 
 
 @lru_cache(maxsize=1)

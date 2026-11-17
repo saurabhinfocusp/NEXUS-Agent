@@ -133,7 +133,14 @@ def _generate_evidence_bundles(state: RunState) -> None:
     # attributions for a model that was never run.
     from nexus_agent.agents.analyst import active_fusion_base
 
-    fusion_model, projector, fusion_base_id = active_fusion_base()
+    from nexus_agent.vision.embedding import configured_embedder_version
+    from nexus_agent.vision.omiclip import is_omiclip_version
+
+    morphology_version = (
+        vision_cells[0]["embedding_model_version"] if vision_cells else configured_embedder_version()
+    )
+    active = active_fusion_base(morphology_version)
+    fusion_model, projector, fusion_space_id = active.model, active.projector, active.space_id
     if projector is not None and adata is not None:
         from nexus_agent.analyst.ingestion import normalize
 
@@ -142,13 +149,13 @@ def _generate_evidence_bundles(state: RunState) -> None:
     classifier_head = None
     try:
         from nexus_agent.learning.celltyping import (
-            checkpoint_fusion_base_id,
+            checkpoint_fusion_space_id,
             latest_promoted_checkpoint_bytes,
             load_checkpoint,
         )
 
         checkpoint_bytes = latest_promoted_checkpoint_bytes(settings.postgres_dsn)
-        if checkpoint_bytes is not None and checkpoint_fusion_base_id(checkpoint_bytes) == fusion_base_id:
+        if checkpoint_bytes is not None and checkpoint_fusion_space_id(checkpoint_bytes) == fusion_space_id:
             import torch
 
             clf, refiner, _label_map = load_checkpoint(checkpoint_bytes)
@@ -158,6 +165,32 @@ def _generate_evidence_bundles(state: RunState) -> None:
         classifier_head = None
 
     literature_embedder = HashingLiteratureEmbedder()
+
+    # Heatmaps explain the encoder that actually embedded the cells. For
+    # OmiCLIP, each cell's map targets its own gene-sentence latent, so it
+    # shows the image regions supporting the image-expression match.
+    image = None
+    explain_embedder = None
+    text_latent_by_cell: dict[str, np.ndarray] = {}
+    if vision_cells:
+        try:
+            from nexus_agent.data.object_store import get_array
+
+            image = get_array(image_uri)
+            if is_omiclip_version(morphology_version):
+                from nexus_agent.vision.omiclip import gene_sentences, get_omiclip_embedder
+
+                explain_embedder = get_omiclip_embedder()
+                if adata is not None and adata.n_obs == len(vision_cells):
+                    expression = adata.X.toarray() if hasattr(adata.X, "toarray") else np.asarray(adata.X)
+                    latents = explain_embedder.text_latents(gene_sentences(adata.var_names, expression))
+                    text_latent_by_cell = {c["cell_id"]: latents[i] for i, c in enumerate(vision_cells)}
+            else:
+                from nexus_agent.vision.embedding import get_vgg16_embedder
+
+                explain_embedder = get_vgg16_embedder()
+        except Exception:
+            logger.warning("could not prepare heatmap inputs for run %s", state["run_id"], exc_info=True)
 
     for agent, claim in produced:
         raw_id = claim["cell_id"]
@@ -178,17 +211,21 @@ def _generate_evidence_bundles(state: RunState) -> None:
         if cell is not None:
             artifacts_expected.append("heatmap")
             try:
-                from nexus_agent.data.object_store import get_array
-                from nexus_agent.vision.embedding import Vgg16Embedder
                 from nexus_agent.vision.segmentation import crop_patch
-                from nexus_agent.xai.gradcam import grad_cam_plusplus
+                from nexus_agent.xai.gradcam import grad_cam_plusplus, grad_cam_plusplus_vit
 
-                image = get_array(image_uri)
+                if image is None or explain_embedder is None:
+                    raise RuntimeError("heatmap inputs unavailable (see the earlier warning)")
                 xs = [p[0] for p in cell["mask_polygon"]]
                 ys = [p[1] for p in cell["mask_polygon"]]
                 bbox = (int(min(ys)), int(min(xs)), int(max(ys)) + 1, int(max(xs)) + 1)
                 patch = crop_patch(image, bbox)
-                heatmap_array = grad_cam_plusplus(Vgg16Embedder(), patch)
+                if is_omiclip_version(morphology_version):
+                    heatmap_array = grad_cam_plusplus_vit(
+                        explain_embedder, patch, text_latent_by_cell.get(raw_id)
+                    )
+                else:
+                    heatmap_array = grad_cam_plusplus(explain_embedder, patch)
                 artifacts_present.append("heatmap")
             except Exception:
                 logger.warning("Grad-CAM++ heatmap failed for claim %s", claim_id, exc_info=True)

@@ -1,6 +1,6 @@
 # NEXUS-Agent Work Plan
 
-**Status:** Phase 0–5 implemented (see per-phase status notes below), plus the post-Phase-5 additions and open-work list further down — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.1
+**Status:** Phase 0–5 implemented (see per-phase status notes below), plus the post-Phase-5 additions and open-work list further down — derived from [CONSTITUTION.md](CONSTITUTION.md) v1.3
 **Team assumption:** small (1–3 generalists), work is mostly sequential with
 parallelization called out where it pays off once foundations exist.
 **Sizing:** relative effort per task — `S` (days), `M` (~1–2 weeks solo),
@@ -585,6 +585,25 @@ live API.**
       and renders the rest at the tier of their weakest finding. The check
       is for grounding, not truth. **Open:** Art. XII §12 requires prompt
       templates to carry a version in provenance; these don't yet.
+- [x] **OmiCLIP morphology encoder** (Constitution v1.3; `vision/omiclip.py`).
+      The default Vision embedder is now OmiCLIP's image encoder (CoCa
+      ViT-L/14 from the Loki release, pinned to revision `8e08d3a`, BSD-3),
+      768-dim zero-padded to 1024; `VISION_EMBEDDER=vgg16` keeps the old
+      path. Its shared image/expression space gives each Analyst claim a
+      `modality_agreement` score -- how well the cell's image picks out its
+      own expression profile among the sample's cells (0.5 = chance) --
+      shown on the report beside the claim, not folded into confidence.
+      Critic's heatmaps for OmiCLIP cells are Grad-CAM++ over the final
+      ViT block's patch tokens, targeted at that image-expression match.
+      Fusion-space ids now include the morphology encoder, so cell-type
+      checkpoints trained on VGG16 embeddings are not applied to OmiCLIP
+      ones; a pretrained fusion base records its encoder and Analyst
+      refuses a mismatch. **Disclosed limits:** OmiCLIP was trained on
+      Visium spot patches, not single-cell crops, and nothing here measures
+      how well it transfers; Loki's housekeeping-gene filter is
+      unpublished, so gene sentences omit that step; first use downloads
+      7.7 GB. Spot-level Vision (below) would put OmiCLIP back in its
+      training distribution.
 - [x] `POST /api/runs` accepts `run_spatial_analysis`,
       `run_enrichment_analysis` and `question`. The frontend form has no
       controls for them yet.
@@ -607,12 +626,12 @@ refiner-not-LoRA fine-tune path) and the Art. VIII checklist below:
       cell count to equal the expression row count, which real
       Visium/HEST samples do not satisfy; `data/container.py::
       check_registration` is not called by the pipeline.
-- [ ] Train a fusion base on real paired data (the mechanism exists, see
-      "Trust layer"; the weights in use are still fixed-seed random). An
-      alternative worth evaluating is a published visual-omics model
-      (OmiCLIP/Loki: public, BSD-3, 7.7 GB checkpoint) as the morphology
-      or fusion encoder; replacing the Art. XII §2-3 stack that way is an
-      Art. IX §2 amendment.
+- [ ] Train a fusion base on real paired data with OmiCLIP morphology
+      (the mechanism exists, see "Trust layer"; the fusion weights in use
+      are still fixed-seed random).
+- [ ] Validate OmiCLIP on single-cell crops, and test `modality_agreement`
+      as an error detector with `benchmark/governance.py` before letting it
+      affect confidence.
 - [ ] Spot-level Vision for Visium-style data (embed the image patch at
       each spot instead of segmenting cells) -- the practical route past
       the registration blocker above, and what pretraining on HEST needs.

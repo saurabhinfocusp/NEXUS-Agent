@@ -15,13 +15,13 @@ from nexus_agent.analyst.fusion import FUSED_DIM, GraphFusionTransformer, fuse
 from nexus_agent.analyst.ingestion import normalize, spatial_knn_graph
 from nexus_agent.analyst.pretrain import (
     EXPRESSION_PCA_DIM,
-    FIXED_SEED_BASE_ID,
+    LEGACY_FUSION_SPACE_ID,
     ExpressionProjector,
     load_fusion_base,
     pretrain_fusion,
     save_fusion_base,
 )
-from nexus_agent.learning.celltyping import CellTypeClassifier, checkpoint_fusion_base_id, save_checkpoint
+from nexus_agent.learning.celltyping import CellTypeClassifier, checkpoint_fusion_space_id, save_checkpoint
 
 MORPHOLOGY_DIM = 16
 GENES = [f"GENE{i}" for i in range(30)]
@@ -99,6 +99,13 @@ def test_pretraining_does_not_disturb_the_global_torch_rng():
     pretrain_fusion([_tissue(0)[:2]], epochs=2, seed=0)
 
     assert torch.equal(torch.rand(3), expected)
+
+
+def test_base_records_the_morphology_encoder_it_was_trained_on():
+    base, _losses = pretrain_fusion([_tissue(0)[:2]], epochs=1, seed=0, morphology_model_version="omiclip-x")
+
+    assert base.morphology_model_version == "omiclip-x"
+    assert load_fusion_base(save_fusion_base(base)).morphology_model_version == "omiclip-x"
 
 
 def test_fusion_base_round_trips_through_bytes(trained):
@@ -203,9 +210,9 @@ def test_checkpoint_records_the_fusion_base_it_was_trained_on():
     classifier = CellTypeClassifier(num_classes=2)
     label_map = {0: "T cell", 1: "B cell"}
 
-    assert checkpoint_fusion_base_id(save_checkpoint(classifier, label_map, None)) == FIXED_SEED_BASE_ID
-    stamped = save_checkpoint(classifier, label_map, None, fusion_base_id="pretrained-abc")
-    assert checkpoint_fusion_base_id(stamped) == "pretrained-abc"
+    assert checkpoint_fusion_space_id(save_checkpoint(classifier, label_map, None)) == LEGACY_FUSION_SPACE_ID
+    stamped = save_checkpoint(classifier, label_map, None, fusion_space_id="pretrained-abc|omiclip-x")
+    assert checkpoint_fusion_space_id(stamped) == "pretrained-abc|omiclip-x"
 
 
 def test_checkpoints_written_before_base_ids_existed_count_as_fixed_seed():
@@ -215,4 +222,5 @@ def test_checkpoints_written_before_base_ids_existed_count_as_fixed_seed():
     buffer = io.BytesIO()
     torch.save({"label_map": {0: "T cell"}, "classifier_state": classifier.state_dict(), "refiner_state": None}, buffer)
 
-    assert checkpoint_fusion_base_id(buffer.getvalue()) == FIXED_SEED_BASE_ID
+    assert checkpoint_fusion_space_id(buffer.getvalue()) == LEGACY_FUSION_SPACE_ID
+    assert LEGACY_FUSION_SPACE_ID == "fixed-seed-20260827|vgg16-conv5_3-zeropad1024-v1"

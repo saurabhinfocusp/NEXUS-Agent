@@ -54,6 +54,11 @@ dependencies = [
     # indirect dependency via other HTTP-using packages) -- no SDK needed.
     "gseapy>=1.1",
     "gprofiler-official>=1.0",
+    # OmiCLIP morphology encoder (Art. XII §2 as amended in v1.3): open_clip
+    # builds its CoCa ViT-L/14; the pinned weights come from the Hugging Face
+    # Hub (huggingface_hub is already a transitive dependency).
+    "open_clip_torch>=2.24",
+    "huggingface_hub>=0.20",
 ]
 
 [project.optional-dependencies]

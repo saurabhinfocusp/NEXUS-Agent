@@ -47,6 +47,23 @@ from nexus_agent.analyst.fusion import FUSED_DIM, GraphFusionTransformer
 
 EXPRESSION_PCA_DIM = 50
 FIXED_SEED_BASE_ID = "fixed-seed-20260827"
+# Morphology encoder of every fused embedding written before encoders were
+# recorded: VGG16 was the only real-path embedder until OmiCLIP (v1.3).
+_LEGACY_MORPHOLOGY_VERSION = "vgg16-conv5_3-zeropad1024-v1"
+
+
+def fusion_space_id(base_id: str, morphology_model_version: str) -> str:
+    """Identifies the coordinate space a fused embedding lives in. It
+    depends on both the fusion weights and the morphology encoder that fed
+    them: the same base fed VGG16 features and OmiCLIP features produces
+    unrelated embeddings. Anything trained on fused embeddings (the Phase 5
+    cell-type head) is valid only in the space it was trained in.
+    """
+    return f"{base_id}|{morphology_model_version}"
+
+
+# The space of every embedding and checkpoint that predates space ids.
+LEGACY_FUSION_SPACE_ID = fusion_space_id(FIXED_SEED_BASE_ID, _LEGACY_MORPHOLOGY_VERSION)
 MAX_PRETRAIN_THREADS = 8
 
 
@@ -115,6 +132,9 @@ class FusionBase:
     model: GraphFusionTransformer
     projector: ExpressionProjector
     base_id: str
+    # The Vision encoder whose embeddings the base was trained on; None for
+    # a base whose trainer didn't say. A base must only be fed that encoder.
+    morphology_model_version: str | None = None
 
 
 def _adjacency(adata: ad.AnnData) -> torch.Tensor:
@@ -135,10 +155,13 @@ def _feature_scale(features: torch.Tensor) -> torch.Tensor:
     return torch.where(std > 1e-6, std, torch.ones_like(std))
 
 
-def _serialize(model: GraphFusionTransformer, projector: ExpressionProjector) -> bytes:
+def _serialize(
+    model: GraphFusionTransformer, projector: ExpressionProjector, morphology_model_version: str | None
+) -> bytes:
     buffer = io.BytesIO()
     torch.save(
         {
+            "morphology_model_version": morphology_model_version,
             "model_state": model.state_dict(),
             "morphology_dim": model.input_proj.in_features - EXPRESSION_PCA_DIM,
             "gene_names": list(projector.gene_names),
@@ -151,7 +174,7 @@ def _serialize(model: GraphFusionTransformer, projector: ExpressionProjector) ->
 
 
 def save_fusion_base(base: FusionBase) -> bytes:
-    return _serialize(base.model, base.projector)
+    return _serialize(base.model, base.projector, base.morphology_model_version)
 
 
 def load_fusion_base(data: bytes) -> FusionBase:
@@ -170,7 +193,12 @@ def load_fusion_base(data: bytes) -> FusionBase:
         mean=payload["mean"].numpy(),
         components=payload["components"].numpy(),
     )
-    return FusionBase(model=model, projector=projector, base_id="pretrained-" + hashlib.sha256(data).hexdigest()[:16])
+    return FusionBase(
+        model=model,
+        projector=projector,
+        base_id="pretrained-" + hashlib.sha256(data).hexdigest()[:16],
+        morphology_model_version=payload.get("morphology_model_version"),
+    )
 
 
 def pretrain_fusion(
@@ -180,12 +208,17 @@ def pretrain_fusion(
     lr: float = 1e-3,
     mask_fraction: float = 0.3,
     seed: int = 0,
+    morphology_model_version: str | None = None,
 ) -> tuple[FusionBase, list[float]]:
     """Train a fusion base on `samples`, each `(morphology, adata)`:
     `morphology` is (n_cells, morphology_dim), row-aligned with `adata`,
     which must already be normalized and carry its spatial k-NN graph
     (`analyst/ingestion.py`). Returns the base and the per-epoch
     reconstruction loss, measured on the hidden features only.
+
+    `morphology_model_version` names the Vision encoder that produced the
+    morphology features (e.g. `OmiclipEmbedder.model_version`). Give it:
+    Analyst refuses to feed a base embeddings from any other encoder.
 
     Deterministic for a given `seed`. Full-batch per sample with dense
     (n_cells x n_cells) attention, so memory grows quadratically with the
@@ -261,7 +294,7 @@ def pretrain_fusion(
         # `load_fusion_base` yields (same id, eval mode). Inside the guarded
         # block: constructing the model draws from the global RNG.
         model.eval()
-        base = load_fusion_base(_serialize(model, projector))
+        base = load_fusion_base(_serialize(model, projector, morphology_model_version))
     finally:
         torch.random.set_rng_state(rng_state)
         torch.set_num_threads(n_threads)

@@ -6,9 +6,12 @@ resulting heatmap upsampled to source-tile resolution by bilinear
 interpolation."
 
 `grad_cam_plusplus` targets `Vgg16Embedder` (`vision/embedding.py`)'s final
-conv layer (conv5_3). `attention_rollout` targets `Dinov2Embedder`'s
-transformer blocks. Both return an (H, W) float32 heatmap normalized to
-[0, 1] at the input patch's own resolution.
+conv layer (conv5_3). `grad_cam_plusplus_vit` targets OmiCLIP's
+(`vision/omiclip.py`) final transformer block, treating its patch tokens as
+the feature map (Art. XII §5 as amended in v1.3 -- see that function).
+`attention_rollout` targets `Dinov2Embedder`'s transformer blocks. All
+return an (H, W) float32 heatmap normalized to [0, 1] at the input patch's
+own resolution.
 """
 
 from __future__ import annotations
@@ -85,7 +88,13 @@ def grad_cam_plusplus(
 
     activation = activations["value"]  # (1, C, H', W')
     grad = activation.grad  # (1, C, H', W'), populated by retain_grad() above
+    return _gradcam_pp_map(activation, grad, patch.shape[:2])
 
+
+def _gradcam_pp_map(activation: torch.Tensor, grad: torch.Tensor, size: tuple[int, int]) -> np.ndarray:
+    """Grad-CAM++ weighting of a (1, C, H', W') activation map by its
+    gradient, ReLU'd, min-max normalized and bilinearly upsampled to `size`.
+    """
     grad_sq = grad**2
     grad_cube = grad**3
     alpha_denom = 2 * grad_sq + (activation * grad_cube).sum(dim=(2, 3), keepdim=True)
@@ -97,8 +106,71 @@ def grad_cam_plusplus(
     cam_max = cam.amax(dim=(2, 3), keepdim=True)
     cam = (cam - cam_min) / (cam_max - cam_min + 1e-8)
 
-    cam = F.interpolate(cam, size=patch.shape[:2], mode="bilinear", align_corners=False)
+    cam = F.interpolate(cam, size=size, mode="bilinear", align_corners=False)
     return cam.squeeze(0).squeeze(0).detach().numpy().astype(np.float32)
+
+
+def grad_cam_plusplus_vit(embedder, patch: np.ndarray, target_latent: np.ndarray | None = None) -> np.ndarray:
+    """Grad-CAM++ for OmiCLIP's ViT image encoder: the final transformer
+    block's patch tokens, reshaped to their 16x16 grid, play the role of a
+    conv layer's feature map.
+
+    Why not attention rollout, Art. XII §5's original choice for a ViT:
+    OmiCLIP's CoCa encoder pools its tokens with an attentional pooler, not
+    through the class token, so the class token's attention -- what rollout
+    traces -- is not what produces the embedding. Gradients of the actual
+    pooled output are.
+
+    `target_latent` (768-dim, normalized) is what the heatmap explains: the
+    cosine similarity between the patch's image latent and it. Pass the
+    cell's own gene-sentence latent and the map shows which image regions
+    support the match to the cell's expression profile -- the cross-modal
+    evidence itself. Without it, the map explains the latent's norm along
+    its own direction, i.e. what drove the embedding.
+
+    `patch`: (H, W, 3) uint8 RGB. Returns (H, W) float32 in [0, 1].
+    """
+    model = embedder._model
+    target_block = model.visual.transformer.resblocks[-1]
+    activations: dict[str, torch.Tensor] = {}
+
+    def _forward_hook(_module, _input, output):
+        output.retain_grad()
+        activations["value"] = output
+
+    handle = target_block.register_forward_hook(_forward_hook)
+    try:
+        with torch.enable_grad():
+            latent = model.encode_image(embedder.image_tensor([patch]))  # (1, 768)
+            if target_latent is not None:
+                target_vec = torch.as_tensor(np.asarray(target_latent), dtype=latent.dtype, device=latent.device)
+                target = F.cosine_similarity(latent, target_vec.unsqueeze(0)).sum()
+            else:
+                target = (latent * F.normalize(latent, dim=-1).detach()).sum()
+            model.zero_grad(set_to_none=True)
+            target.backward()
+    finally:
+        handle.remove()
+        # The model is a shared, cached inference instance: don't leave
+        # parameter gradients (~2.5 GB for OmiCLIP) attached to it.
+        model.zero_grad(set_to_none=True)
+
+    tokens = activations["value"]
+    grad = tokens.grad
+    if tokens.shape[0] != 1:  # sequence-first layout: (L, 1, D) -> (1, L, D)
+        tokens, grad = tokens.transpose(0, 1), grad.transpose(0, 1)
+    n_tokens = tokens.shape[1]
+    grid = int(math.isqrt(n_tokens))
+    if grid * grid != n_tokens:  # a leading class token
+        tokens, grad = tokens[:, 1:], grad[:, 1:]
+        grid = int(math.isqrt(n_tokens - 1))
+        if grid * grid != n_tokens - 1:
+            raise RuntimeError(f"cannot arrange {n_tokens} ViT tokens into a square patch grid")
+
+    def _as_map(x: torch.Tensor) -> torch.Tensor:  # (1, grid*grid, D) -> (1, D, grid, grid)
+        return x.transpose(1, 2).reshape(1, x.shape[2], grid, grid)
+
+    return _gradcam_pp_map(_as_map(tokens.detach().cpu()), _as_map(grad.detach().cpu()), patch.shape[:2])
 
 
 def attention_rollout(embedder: "Dinov2Embedder", patch: np.ndarray) -> np.ndarray:

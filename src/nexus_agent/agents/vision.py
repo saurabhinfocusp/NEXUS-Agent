@@ -2,8 +2,9 @@
 
 Owns all image-derived evidence: segmentation, morphological feature
 extraction, and image encoding. When `state["image_uri"]` is set, this runs
-the real Phase 3 model stack (CellPose segmentation + VGG16/DINOv2
-embedding, `vision/segmentation.py` + `vision/embedding.py`); otherwise it
+the real model stack (CellPose segmentation + the configured embedder --
+OmiCLIP by default, VGG16 or DINOv2 -- `vision/segmentation.py`,
+`vision/embedding.py::get_embedder`); otherwise it
 falls back to the Phase 0/1 single-synthetic-cell stub, so fast/unit tests
 stay Docker- and model-free.
 """
@@ -52,13 +53,12 @@ def _stub_cell_record() -> VisionCellRecord:
 
 def _segment_and_embed(image_uri: str) -> tuple[list[VisionCellRecord], dict[str, float], float, list[str]]:
     """Real Phase 3 path: fetch the image from object storage, segment with
-    CellPose, embed each cell crop (VGG16 default -- see ROADMAP.md's
-    Phase 3 scope notes for why), and build real VisionCellRecords.
+    CellPose, embed every cell crop in one batch with the configured
+    embedder (Art. XII §2 as amended in v1.3), and build real
+    VisionCellRecords.
     """
-    from concurrent.futures import ThreadPoolExecutor
-
     from nexus_agent.data.object_store import get_array
-    from nexus_agent.vision.embedding import get_vgg16_embedder
+    from nexus_agent.vision.embedding import get_embedder
     from nexus_agent.vision.segmentation import (
         cell_confidences,
         cells_from_mask,
@@ -70,24 +70,21 @@ def _segment_and_embed(image_uri: str) -> tuple[list[VisionCellRecord], dict[str
     label_mask, cell_probability = segment_cells_with_probability(image)
     cell_infos = cells_from_mask(label_mask)
 
-    embedder = get_vgg16_embedder()
-
-    def _build_record(info: dict) -> VisionCellRecord:
-        patch = crop_patch(image, info["bbox"])
-        return VisionCellRecord(
-            cell_id=info["cell_id"],
-            centroid_xy=info["centroid_xy"],
-            mask_polygon=info["mask_polygon"],
-            embedding_vector=embedder.embed_patch(patch).tolist(),
-            embedding_model_version=embedder.model_version,
-        )
-
     if not cell_infos:
         return [], {}, 0.05, [f"CellPose found no cells in {image_uri}"]
 
-    max_workers = min(8, max(1, len(cell_infos)))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        records = list(executor.map(_build_record, cell_infos))
+    embedder = get_embedder()
+    embeddings = embedder.embed_patches([crop_patch(image, info["bbox"]) for info in cell_infos])
+    records = [
+        VisionCellRecord(
+            cell_id=info["cell_id"],
+            centroid_xy=info["centroid_xy"],
+            mask_polygon=info["mask_polygon"],
+            embedding_vector=embedding.tolist(),
+            embedding_model_version=embedder.model_version,
+        )
+        for info, embedding in zip(cell_infos, embeddings)
+    ]
 
     reasoning = [f"CellPose segmented {len(records)} cell(s) from {image_uri}", f"embedded via {embedder.model_version}"]
     if cell_probability is None:

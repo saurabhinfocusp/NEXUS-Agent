@@ -18,6 +18,8 @@ representation rather than a hardcoded confidence.
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
@@ -44,6 +46,8 @@ from nexus_agent.shared.versioning import stamp
 # seed) remains future work, same as Phase 3 disclosed.
 _FUSION_BASE_SEED = 20260827
 
+logger = logging.getLogger(__name__)
+
 
 def _fixed_seed_fusion_model():
     from nexus_agent.analyst.fusion import GraphFusionTransformer
@@ -65,21 +69,48 @@ def _load_pretrained_base(uri: str):
     return load_fusion_base(get_bytes(uri))
 
 
-def active_fusion_base():
-    """`(model, projector_or_None, base_id)` for the fusion base this
-    deployment runs: the pretrained base at `settings.fusion_checkpoint_uri`
-    when one is configured, else the fixed-seed untrained base (no
-    projector -- `fuse()` falls back to its per-sample PCA). Analyst's
-    predictions, Critic's SHAP explanations and the fine-tune loop must all
-    use this one base; `base_id` is how they check they agree.
+@dataclass(frozen=True)
+class ActiveFusion:
+    model: torch.nn.Module
+    projector: object | None  # analyst/pretrain.py::ExpressionProjector
+    base_id: str
+    space_id: str
+
+
+def active_fusion_base(morphology_model_version: str) -> ActiveFusion:
+    """The fusion base this deployment runs, for embeddings from the Vision
+    encoder `morphology_model_version`: the pretrained base at
+    `settings.fusion_checkpoint_uri` when one is configured, else the
+    fixed-seed untrained base (no projector -- `fuse()` falls back to its
+    per-sample PCA). Analyst's predictions, Critic's SHAP explanations and
+    the fine-tune loop must all go through here; `space_id`
+    (`analyst/pretrain.py::fusion_space_id`) is how they check they agree.
+
+    Raises `ValueError` if the pretrained base was trained on a different
+    encoder's embeddings -- a deployment misconfiguration, not something to
+    carry on through.
     """
-    from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID
+    from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID, fusion_space_id
     from nexus_agent.shared.config import settings
 
     if settings.fusion_checkpoint_uri:
         base = _load_pretrained_base(settings.fusion_checkpoint_uri)
-        return base.model, base.projector, base.base_id
-    return _fixed_seed_fusion_model(), None, FIXED_SEED_BASE_ID
+        if base.morphology_model_version not in (None, morphology_model_version):
+            raise ValueError(
+                f"the fusion base at {settings.fusion_checkpoint_uri} was trained on "
+                f"{base.morphology_model_version} embeddings, but Vision produced "
+                f"{morphology_model_version}; set VISION_EMBEDDER to match the base or train a base "
+                "for this encoder"
+            )
+        return ActiveFusion(
+            base.model, base.projector, base.base_id, fusion_space_id(base.base_id, morphology_model_version)
+        )
+    return ActiveFusion(
+        _fixed_seed_fusion_model(),
+        None,
+        FIXED_SEED_BASE_ID,
+        fusion_space_id(FIXED_SEED_BASE_ID, morphology_model_version),
+    )
 
 
 class AnalystClaim(BaseModel):
@@ -88,6 +119,11 @@ class AnalystClaim(BaseModel):
     spatial_domain: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
     provisional: bool
+    # How well this cell's image picks out its own expression profile among
+    # the sample's cells (analyst/agreement.py); 0.5 = chance. Evidence
+    # reported beside the claim, not part of `confidence`. None unless
+    # Vision used OmiCLIP.
+    modality_agreement: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 def _stub_claim(*, provisional: bool) -> AnalystClaim:
@@ -155,8 +191,10 @@ def _ingest_and_fuse(state: RunState, expression_uri: str, vision_ran: bool):
 
     from nexus_agent.analyst.fusion import fuse
 
-    fusion_model, projector, fusion_base_id = active_fusion_base()
-    base_reasoning = [f"fusion base: {fusion_base_id}"]
+    morphology_version = vision_cells[0]["embedding_model_version"] if vision_cells else "none"
+    active = active_fusion_base(morphology_version)
+    fusion_model, projector, fusion_space_id = active.model, active.projector, active.space_id
+    base_reasoning = [f"fusion base: {active.base_id}; morphology encoder: {morphology_version}"]
     expression_features = None
     if projector is not None:
         coverage = projector.gene_coverage(adata.var_names)
@@ -175,7 +213,7 @@ def _ingest_and_fuse(state: RunState, expression_uri: str, vision_ran: bool):
     # fine-tune cycle has been promoted -- there is nothing to predict with.
     from nexus_agent.analyst.domains import assign_domains
     from nexus_agent.learning.celltyping import (
-        checkpoint_fusion_base_id,
+        checkpoint_fusion_space_id,
         latest_promoted_checkpoint_bytes,
         predict_cell_types,
     )
@@ -191,14 +229,15 @@ def _ingest_and_fuse(state: RunState, expression_uri: str, vision_ran: bool):
     reasoning.extend(domain_reasoning)
 
     checkpoint_bytes = latest_promoted_checkpoint_bytes(_settings.postgres_dsn)
-    if checkpoint_bytes is not None and checkpoint_fusion_base_id(checkpoint_bytes) != fusion_base_id:
+    if checkpoint_bytes is not None and checkpoint_fusion_space_id(checkpoint_bytes) != fusion_space_id:
         reasoning.append(
-            f"the promoted cell-type checkpoint was trained on fusion base "
-            f"{checkpoint_fusion_base_id(checkpoint_bytes)}, not the active {fusion_base_id}; it is not "
-            "applied, so no cell type is called until a checkpoint is fine-tuned and promoted on this base"
+            f"the promoted cell-type checkpoint was trained in fusion space "
+            f"{checkpoint_fusion_space_id(checkpoint_bytes)}, not the active {fusion_space_id}; it is not "
+            "applied, so no cell type is called until a checkpoint is fine-tuned and promoted in this space"
         )
         checkpoint_bytes = None
     cell_types = predict_cell_types(fused_matrix, checkpoint_bytes)
+    agreement = _modality_agreement(vision_cells, adata, morphology_version, reasoning)
     if checkpoint_bytes is not None:
         reasoning.append(
             "cell_type predicted from the latest promoted Phase 5 fine-tune checkpoint (Art. XII §6); "
@@ -215,8 +254,11 @@ def _ingest_and_fuse(state: RunState, expression_uri: str, vision_ran: bool):
             spatial_domain=domain,
             confidence=float(min(d_conf, type_conf) if type_conf is not None else d_conf),
             provisional=False,
+            modality_agreement=None if agreement is None or np.isnan(agreement[i]) else float(agreement[i]),
         )
-        for r, domain, d_conf, (cell_type, type_conf) in zip(fused_records, domains, domain_confidence, cell_types)
+        for i, (r, domain, d_conf, (cell_type, type_conf)) in enumerate(
+            zip(fused_records, domains, domain_confidence, cell_types)
+        )
     ]
     confidence = float(np.mean([c.confidence for c in claims]))
     reasoning.append(
@@ -229,12 +271,44 @@ def _ingest_and_fuse(state: RunState, expression_uri: str, vision_ran: bool):
             "source_image_region": r.source_image_region,
             # The base id travels with the embedding: the fine-tune loop
             # may only train on embeddings from the base it will be used with.
-            "source_expression_profile": {**r.source_expression_profile, "fusion_base_id": fusion_base_id},
+            "source_expression_profile": {**r.source_expression_profile, "fusion_space_id": fusion_space_id},
             "fused_embedding": r.fused_embedding,
         }
         for r in fused_records
     ]
     return claims, confidence, reasoning, provenance_records
+
+
+def _modality_agreement(vision_cells: list[dict], adata, morphology_version: str, reasoning: list[str]):
+    """Per-cell image-expression agreement (`analyst/agreement.py`) when
+    Vision embedded with OmiCLIP, else None. Best-effort: a failure leaves
+    the claims without it and says so in `reasoning`.
+    """
+    from nexus_agent.vision.omiclip import is_omiclip_version
+
+    if not is_omiclip_version(morphology_version):
+        return None
+    try:
+        from nexus_agent.analyst.agreement import retrieval_agreement
+        from nexus_agent.vision.omiclip import gene_sentences, get_omiclip_embedder, image_latent_from_embedding
+
+        expression = adata.X.toarray() if hasattr(adata.X, "toarray") else np.asarray(adata.X)
+        text_latents = get_omiclip_embedder().text_latents(gene_sentences(adata.var_names, expression))
+        image_latents = np.stack([image_latent_from_embedding(c["embedding_vector"]) for c in vision_cells])
+        agreement = retrieval_agreement(image_latents, text_latents)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("image-expression agreement failed", exc_info=True)
+        reasoning.append(f"image-expression agreement not computed ({exc})")
+        return None
+    if np.isnan(agreement).all():
+        reasoning.append("image-expression agreement needs at least 2 cells; not computed")
+        return agreement
+    reasoning.append(
+        f"OmiCLIP image-expression agreement (0.5 = chance): mean {np.nanmean(agreement):.2f}, "
+        f"{np.nanmean(agreement < 0.5):.0%} of cells below chance; OmiCLIP was trained on Visium spots, "
+        "so for single-cell crops this is unvalidated evidence, not part of confidence"
+    )
+    return agreement
 
 
 def _record_provenance(state: RunState, provenance_records: list[dict]) -> None:

@@ -6,6 +6,8 @@ Mirrors the variables in .env.example / docker-compose.yml.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +41,12 @@ class Settings(BaseSettings):
     # it's wrong (no CUDA torch installed, or no GPU) is a real torch/
     # CellPose error at model-load time, not a silently-ignored setting.
     nexus_device: str = "cpu"
+
+    # Morphology encoder (Art. XII §2 as amended in v1.3). "omiclip" (the
+    # default) downloads a pinned 7.7 GB checkpoint on first use -- or reads
+    # it from `omiclip_checkpoint_path`. "vgg16" is the low-compute fallback.
+    vision_embedder: Literal["omiclip", "vgg16", "dinov2"] = "omiclip"
+    omiclip_checkpoint_path: str | None = None
 
     # Object-store URI of a pretrained fusion base (`analyst/pretrain.py::
     # save_fusion_base` bytes). Unset (the default): Analyst uses the

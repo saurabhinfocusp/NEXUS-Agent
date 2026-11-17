@@ -68,6 +68,7 @@ def collect_report_claims(state: RunState) -> list[dict]:
                     "niche_label": c.get("niche_label"),
                     "pathway": c.get("pathway"),
                     "confidence": c["confidence"],
+                    "modality_agreement": c.get("modality_agreement"),
                 }
             )
     return claims

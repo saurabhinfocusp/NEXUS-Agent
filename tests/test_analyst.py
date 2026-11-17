@@ -170,27 +170,29 @@ def test_fused_claims_carry_a_spatial_domain_and_a_measured_confidence(monkeypat
 
 
 def test_provenance_records_the_fusion_base_each_embedding_came_from(monkeypatch):
-    from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID
+    from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID, fusion_space_id
 
     _claims, _confidence, _reasoning, provenance, _population = _run_fused(monkeypatch)
 
     assert len(provenance) == 20
-    assert all(p["source_expression_profile"]["fusion_base_id"] == FIXED_SEED_BASE_ID for p in provenance)
+    expected = fusion_space_id(FIXED_SEED_BASE_ID, "test-stub")  # the fixture's embedding_model_version
+    assert all(p["source_expression_profile"]["fusion_space_id"] == expected for p in provenance)
 
 
-def _checkpoint(fusion_base_id: str) -> bytes:
+def _checkpoint(fusion_space_id: str) -> bytes:
     from nexus_agent.learning.celltyping import CellTypeClassifier, save_checkpoint
 
     return save_checkpoint(
-        CellTypeClassifier(num_classes=2), {0: "T cell", 1: "B cell"}, None, fusion_base_id=fusion_base_id
+        CellTypeClassifier(num_classes=2), {0: "T cell", 1: "B cell"}, None, fusion_space_id=fusion_space_id
     )
 
 
 def test_checkpoint_from_the_active_base_is_applied_and_bounds_confidence(monkeypatch):
-    from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID
+    from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID, fusion_space_id
 
     untyped, *_ = _run_fused(monkeypatch)
-    typed, _confidence, reasoning, *_ = _run_fused(monkeypatch, checkpoint_bytes=_checkpoint(FIXED_SEED_BASE_ID))
+    active_space = fusion_space_id(FIXED_SEED_BASE_ID, "test-stub")
+    typed, _confidence, reasoning, *_ = _run_fused(monkeypatch, checkpoint_bytes=_checkpoint(active_space))
 
     assert all(c.cell_type in {"T cell", "B cell"} for c in typed)
     # a claim is as confident as its weakest part: adding a call can only lower it
@@ -198,11 +200,18 @@ def test_checkpoint_from_the_active_base_is_applied_and_bounds_confidence(monkey
     assert any("softmax probability" in line for line in reasoning)
 
 
-def test_checkpoint_from_another_base_is_not_applied_and_the_reason_is_recorded(monkeypatch):
-    claims, _confidence, reasoning, *_ = _run_fused(monkeypatch, checkpoint_bytes=_checkpoint("pretrained-other"))
+@pytest.mark.parametrize(
+    "other_space",
+    [
+        "pretrained-other|test-stub",  # another fusion base
+        "fixed-seed-20260827|vgg16-conv5_3-zeropad1024-v1",  # same base, another morphology encoder
+    ],
+)
+def test_checkpoint_from_another_fusion_space_is_not_applied_and_the_reason_is_recorded(monkeypatch, other_space):
+    claims, _confidence, reasoning, *_ = _run_fused(monkeypatch, checkpoint_bytes=_checkpoint(other_space))
 
     assert all(c.cell_type is None for c in claims)
-    assert any("pretrained-other" in line and "not applied" in line for line in reasoning)
+    assert any(other_space in line and "not applied" in line for line in reasoning)
 
 
 def test_configured_pretrained_base_is_used_with_its_own_projector(monkeypatch):
@@ -215,7 +224,9 @@ def test_configured_pretrained_base_is_used_with_its_own_projector(monkeypatch):
     normalize(training_adata)
     spatial_knn_graph(training_adata)
     morphology = np.array([c["embedding_vector"] for c in _state["history"][0].payload["cells"]])
-    base, _losses = pretrain_fusion([(morphology, training_adata)], epochs=5, seed=0)
+    base, _losses = pretrain_fusion(
+        [(morphology, training_adata)], epochs=5, seed=0, morphology_model_version="test-stub"
+    )
 
     monkeypatch.setattr(settings, "fusion_checkpoint_uri", "s3://fake/fusion/base.pt")
     monkeypatch.setattr("nexus_agent.data.object_store.get_bytes", lambda uri: save_fusion_base(base))
@@ -226,6 +237,31 @@ def test_configured_pretrained_base_is_used_with_its_own_projector(monkeypatch):
         analyst._load_pretrained_base.cache_clear()
 
     assert len(claims) == 20
-    assert all(p["source_expression_profile"]["fusion_base_id"] == base.base_id for p in provenance)
+    assert all(
+        p["source_expression_profile"]["fusion_space_id"] == f"{base.base_id}|test-stub" for p in provenance
+    )
     assert any(base.base_id in line for line in reasoning)
     assert any("100% of the pretrained base's 20 genes" in line for line in reasoning)
+
+
+def test_pretrained_base_refuses_embeddings_from_another_encoder(monkeypatch):
+    from nexus_agent.agents import analyst
+    from nexus_agent.analyst.ingestion import normalize, spatial_knn_graph
+    from nexus_agent.analyst.pretrain import pretrain_fusion, save_fusion_base
+
+    state, training_adata, _population = _two_population_inputs()
+    training_adata = training_adata.copy()
+    normalize(training_adata)
+    spatial_knn_graph(training_adata)
+    morphology = np.array([c["embedding_vector"] for c in state["history"][0].payload["cells"]])
+    base, _losses = pretrain_fusion(
+        [(morphology, training_adata)], epochs=2, seed=0, morphology_model_version="vgg16-conv5_3-zeropad1024-v1"
+    )
+    monkeypatch.setattr(settings, "fusion_checkpoint_uri", "s3://fake/fusion/base.pt")
+    monkeypatch.setattr("nexus_agent.data.object_store.get_bytes", lambda uri: save_fusion_base(base))
+    analyst._load_pretrained_base.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="trained on vgg16"):
+            _run_fused(monkeypatch)  # the fixture's cells say embedding_model_version="test-stub"
+    finally:
+        analyst._load_pretrained_base.cache_clear()

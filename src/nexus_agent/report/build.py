@@ -71,6 +71,7 @@ class ReportClaimInput(BaseModel):
     niche_label: str | None = None
     pathway: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
+    modality_agreement: float | None = None
 
 
 class ClaimReportEntry(BaseModel):
@@ -89,6 +90,9 @@ class ClaimReportEntry(BaseModel):
     shap_top_genes: list[dict] | None = None
     citations: list[dict] | None = None
     no_literature_retrieved: bool = False
+    # OmiCLIP image-expression agreement (analyst/agreement.py), shown as
+    # evidence beside the claim. Not part of confidence or tier.
+    modality_agreement: float | None = None
 
 
 class Report(BaseModel):
@@ -141,6 +145,7 @@ def render_report(
                 shap_top_genes=evidence.get("shap_top_genes"),
                 citations=evidence.get("citations"),
                 no_literature_retrieved=evidence.get("no_literature_retrieved", False),
+                modality_agreement=claim.modality_agreement,
             )
         )
     return Report(run_id=run_id, task_id=task_id, entries=entries)
@@ -164,6 +169,12 @@ def _render_entry(entry: ClaimReportEntry) -> str:
     tier_label = _TIER_LABELS[entry.weight_tier]
     value = html.escape(entry.value) if entry.value is not None else "(unspecified)"
     confidence_pct = f"{entry.confidence * 100:.1f}%"
+    agreement_html = (
+        f'\n  <p class="claim-agreement">Image-expression agreement: {entry.modality_agreement:.2f} '
+        "(0.5 = chance; unvalidated for single cells)</p>"
+        if entry.modality_agreement is not None
+        else ""
+    )
 
     if entry.heatmap_uri:
         visual_html = f'<img src="{html.escape(entry.heatmap_uri)}" alt="visual attribution heatmap">'
@@ -186,7 +197,7 @@ def _render_entry(entry: ClaimReportEntry) -> str:
   <span class="tier-badge">[{html.escape(tier_label)}]</span>
   <p class="claim-type">Claim type: {html.escape(entry.claim_type)}</p>
   <p class="claim-value">Value: {value}</p>
-  <p class="claim-confidence">Confidence: {confidence_pct}</p>
+  <p class="claim-confidence">Confidence: {confidence_pct}</p>{agreement_html}
   <div class="visual-attribution">{visual_html}</div>
   <div class="gene-importance">{genes_html}</div>
   <div class="citations">{citations_html}</div>

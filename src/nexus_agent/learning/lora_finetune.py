@@ -73,7 +73,7 @@ from pydantic import BaseModel
 from torch import nn
 
 from nexus_agent.analyst.fusion import FUSED_DIM
-from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID
+from nexus_agent.analyst.pretrain import LEGACY_FUSION_SPACE_ID
 from nexus_agent.data.object_store import put_bytes
 from nexus_agent.data.provenance import fetch_provenance
 from nexus_agent.learning.celltyping import CellTypeClassifier, save_checkpoint
@@ -206,20 +206,20 @@ def _fetch_cell_type_corrections(conn: psycopg.Connection) -> list[dict[str, Any
 
 
 def _latest_fused_embedding(
-    dsn: str, run_id: uuid.UUID, claim_id: str, fusion_base_id: str
+    dsn: str, run_id: uuid.UUID, claim_id: str, fusion_space_id: str
 ) -> list[float] | None:
     """Most recent `provenance_log.fused_embedding` for `(run_id, claim_id)`
-    produced under `fusion_base_id`, or `None` if there isn't one (a
-    stub/non-fused claim, or one fused under a different base -- embeddings
-    from two bases share no coordinate system and must not be mixed in one
-    training set). Rows written before base ids were recorded came from the
-    fixed-seed base.
+    produced under `fusion_space_id`, or `None` if there isn't one (a
+    stub/non-fused claim, or one fused in a different space -- embeddings
+    from two fusion bases, or from two morphology encoders, share no
+    coordinate system and must not be mixed in one training set). Rows
+    written before space ids were recorded are `LEGACY_FUSION_SPACE_ID`.
     """
     for row in reversed(fetch_provenance(dsn, run_id)):
         if row["claim_id"] != claim_id or row.get("fused_embedding") is None:
             continue
-        row_base_id = (row.get("source_expression_profile") or {}).get("fusion_base_id", FIXED_SEED_BASE_ID)
-        if row_base_id == fusion_base_id:
+        row_space_id = (row.get("source_expression_profile") or {}).get("fusion_space_id", LEGACY_FUSION_SPACE_ID)
+        if row_space_id == fusion_space_id:
             return row["fused_embedding"]
     return None
 
@@ -252,7 +252,9 @@ def run_finetune_cycle(
     """
     from nexus_agent.agents.analyst import active_fusion_base
 
-    _model, _projector, fusion_base_id = active_fusion_base()
+    from nexus_agent.vision.embedding import configured_embedder_version
+
+    fusion_space_id = active_fusion_base(configured_embedder_version()).space_id
 
     with psycopg.connect(dsn, autocommit=True) as conn:
         corrections = _fetch_cell_type_corrections(conn)
@@ -260,7 +262,7 @@ def run_finetune_cycle(
     fused_embeddings: list[list[float]] = []
     labels: list[str] = []
     for corr in corrections:
-        embedding = _latest_fused_embedding(dsn, corr["run_id"], corr["claim_id"], fusion_base_id)
+        embedding = _latest_fused_embedding(dsn, corr["run_id"], corr["claim_id"], fusion_space_id)
         if embedding is None:
             continue
         fused_embeddings.append(embedding)
@@ -278,12 +280,12 @@ def run_finetune_cycle(
         fused_embeddings, labels, epochs=epochs, lr=lr
     )
 
-    checkpoint_bytes = save_checkpoint(classifier, label_map, refiner, fusion_base_id=fusion_base_id)
+    checkpoint_bytes = save_checkpoint(classifier, label_map, refiner, fusion_space_id=fusion_space_id)
     checkpoint_uri = put_bytes(f"checkpoints/{uuid.uuid4()}/checkpoint.pt", checkpoint_bytes)
 
     trigger_reason = (
         f"{n_usable} usable corrections recovered from correction_log/provenance_log "
-        f"(fusion base {fusion_base_id})"
+        f"(fusion space {fusion_space_id})"
     )
 
     with psycopg.connect(dsn, autocommit=True) as conn:

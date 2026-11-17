@@ -332,9 +332,16 @@ resulting claim is provisional under Article V, Section 1.
 **Section 2. Vision Specialist — Model Stack.**
 Segmentation defaults to CellPose (`cyto3`), with StarDist as the
 platform-conditioned fallback for densely packed nuclei (H&E, IMC). Per-cell
-morphology is encoded via DINOv2 ViT-L/14 (1024-dim patch embeddings), with
-VGG16 `conv5_3` (512-dim) retained as a lighter-weight fallback for
-low-compute deployments. Output contract per cell:
+morphology is encoded via the OmiCLIP image encoder (CoCa ViT-L/14, a
+visual-omics model trained on paired histology and spatial transcriptomics;
+768-dim, zero-padded to the 1024-dim contract), from a pinned revision of
+its published weights, with VGG16 `conv5_3` (512-dim) retained as a
+lighter-weight fallback for low-compute deployments and DINOv2 ViT-L/14
+(1024-dim) as a supported alternative. Because OmiCLIP embeds images and
+expression profiles in one space, each cell's image may also be scored
+against its own expression profile; that score is reported as evidence
+beside a claim and is not part of its confidence until validated under
+Article VIII. Output contract per cell:
 `{cell_id, centroid_xy, mask_polygon, embedding_vector[1024], embedding_model_version}`.
 
 **Section 3. Analyst — Fusion and Reasoning Stack.**
@@ -363,8 +370,12 @@ queue node (Article VII, Section 3).
 
 **Section 5. Explainability Implementation.**
 Grad-CAM++ is hooked at the final convolutional block of the vision backbone
-(or computed via attention rollout for a ViT backbone), with the resulting
-heatmap upsampled to source-tile resolution by bilinear interpolation. SHAP
+(or, for a ViT backbone, at its final transformer block with the patch
+tokens treated as the feature map -- or via attention rollout where the
+class token carries the embedding), with the resulting heatmap upsampled to
+source-tile resolution by bilinear interpolation. For OmiCLIP the heatmap
+explains the similarity between the cell's image and its own expression
+profile where expression is available. SHAP
 uses a `KernelExplainer` over the fusion layer's output (model-agnostic,
 since the graph transformer is not tree-based), with a background set of 100
 randomly sampled cells per tissue sample and the top 15 genes retained per
@@ -457,6 +468,7 @@ implementation detail.
 | 1.0 | 2026-08-24 | Initial constitution drafted from the NEXUS-Agent One-Pager | Saurabh Gupta, Infocusp |
 | 1.1 | 2026-08-24 | Added Article XII (Technical Reference Specification), giving Articles III–VIII concrete data formats, model parameters, message schemas, XAI implementation, fine-tuning rules, and validation thresholds. Affects Core Principles 1, 2, 5, 6 (Article II). | Saurabh Gupta, Infocusp |
 | 1.2 | 2026-09-16 | Recorded the first exercise of Article III, Section 4's extensibility clause: added the QC, Spatial Transcriptomics, and Biology (Enrichment) Agents to Article III, Section 1, and their technical stacks/output contracts as Article XII, Sections 10–11. Not itself an amendment to Sections 1–3 or Article II (Section 4 pre-authorizes this), but recorded here for traceability since it changes the documented agent roster. Affects Core Principles 1 and 6 (Article II) — new claim types (niche/pathway) now require the same evidence/traceability standard as existing claims. | Saurabh Gupta, Infocusp |
+| 1.3 | 2026-11-17 | Article XII, Sections 2 and 5: made the OmiCLIP image encoder (Chen et al., Nature Methods 2025; Loki release, BSD-3-Clause, pinned revision `8e08d3a`) the default morphology encoder in place of DINOv2, kept VGG16 as the low-compute fallback and DINOv2 as an alternative, and added image-expression agreement as reported (not confidence-bearing) evidence. Section 5 now allows Grad-CAM++ over a ViT's final-block patch tokens, since OmiCLIP pools through an attentional pooler rather than its class token, which attention rollout would trace. Reason: a visual-omics encoder trained on paired H&E and transcriptomics is closer to Article V's fusion goal than a natural-image encoder, and its shared space gives a cross-modal consistency signal. Affects Core Principles 2, 4 and 5 (Article II): OmiCLIP was trained on Visium spot patches, so its use on single-cell crops is unvalidated until measured under Article VIII. | Saurabh Gupta, Infocusp |
 
 ---
 

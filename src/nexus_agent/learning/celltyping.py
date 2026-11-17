@@ -33,7 +33,7 @@ import torch
 from torch import nn
 
 from nexus_agent.analyst.fusion import FUSED_DIM
-from nexus_agent.analyst.pretrain import FIXED_SEED_BASE_ID
+from nexus_agent.analyst.pretrain import LEGACY_FUSION_SPACE_ID
 from nexus_agent.data.object_store import get_bytes
 
 
@@ -54,16 +54,17 @@ def save_checkpoint(
     label_map: dict[int, str],
     refiner: nn.Module | None,
     *,
-    fusion_base_id: str = FIXED_SEED_BASE_ID,
+    fusion_space_id: str = LEGACY_FUSION_SPACE_ID,
 ) -> bytes:
     """Serialize `classifier` + `label_map` (+ optional `refiner`) to bytes.
 
-    `fusion_base_id` names the fusion base whose embeddings the head was
-    trained on (`analyst/pretrain.py`). A head is meaningless on any other
-    base's embeddings, so the id is stored and checked before use.
+    `fusion_space_id` names the fusion space (`analyst/pretrain.py::
+    fusion_space_id`: fusion base + morphology encoder) whose embeddings
+    the head was trained on. A head is meaningless on embeddings from any
+    other space, so the id is stored and checked before use.
     """
     payload: dict[str, Any] = {
-        "fusion_base_id": fusion_base_id,
+        "fusion_space_id": fusion_space_id,
         "label_map": label_map,
         "classifier_state": classifier.state_dict(),
         "refiner_state": refiner.state_dict() if refiner is not None else None,
@@ -73,12 +74,13 @@ def save_checkpoint(
     return buffer.getvalue()
 
 
-def checkpoint_fusion_base_id(data: bytes) -> str:
-    """The fusion base a checkpoint was trained on. Checkpoints written
-    before base ids existed were all trained on the fixed-seed base.
+def checkpoint_fusion_space_id(data: bytes) -> str:
+    """The fusion space a checkpoint was trained in. Checkpoints written
+    before space ids existed were all trained in `LEGACY_FUSION_SPACE_ID`
+    (fixed-seed base, VGG16 morphology).
     """
     payload = torch.load(io.BytesIO(data), weights_only=False)
-    return payload.get("fusion_base_id", FIXED_SEED_BASE_ID)
+    return payload.get("fusion_space_id", LEGACY_FUSION_SPACE_ID)
 
 
 def load_checkpoint(data: bytes) -> tuple[CellTypeClassifier, nn.Module | None, dict[int, str]]:

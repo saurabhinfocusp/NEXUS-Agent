@@ -11,6 +11,11 @@ Usage:
     python scripts/pretrain_fusion.py SAMPLE_DIR --output fusion_base.pt
     python scripts/pretrain_fusion.py SAMPLE_DIR --upload fusion/base.pt
 
+`--morphology-model-version` must name the Vision encoder that produced the
+`.morphology.npy` files (the `embedding_model_version` on Vision's cells);
+it defaults to the deployment's configured encoder. Analyst refuses to
+feed the base embeddings from any other encoder.
+
 `--upload` puts the base in the configured object store and prints the
 `FUSION_CHECKPOINT_URI` to set. Switching a deployment to a new base makes
 Analyst ignore cell-type checkpoints trained on the old one until a new
@@ -59,18 +64,30 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--mask-fraction", type=float, default=0.3)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--morphology-model-version",
+        help="Vision encoder that produced the morphology files (default: the configured VISION_EMBEDDER)",
+    )
     args = parser.parse_args()
     if not (args.output or args.upload):
         parser.error("give --output and/or --upload")
 
+    from nexus_agent.vision.embedding import configured_embedder_version
+
     samples = load_samples(args.sample_dir)
+    morphology_model_version = args.morphology_model_version or configured_embedder_version()
     base, losses = pretrain_fusion(
-        samples, epochs=args.epochs, lr=args.lr, mask_fraction=args.mask_fraction, seed=args.seed
+        samples,
+        epochs=args.epochs,
+        lr=args.lr,
+        mask_fraction=args.mask_fraction,
+        seed=args.seed,
+        morphology_model_version=morphology_model_version,
     )
     data = save_fusion_base(base)
     print(f"trained on {len(samples)} sample(s), {sum(a.n_obs for _m, a in samples)} cells")
     print(f"masked reconstruction loss: {losses[0]:.4f} -> {losses[-1]:.4f}")
-    print(f"fusion base id: {base.base_id} ({len(base.projector.gene_names)} genes)")
+    print(f"fusion base id: {base.base_id} ({len(base.projector.gene_names)} genes, {morphology_model_version})")
 
     if args.output:
         args.output.write_bytes(data)
