@@ -58,7 +58,23 @@ def test_pretraining_reduces_masked_reconstruction_loss(trained):
     _base, losses = trained
 
     assert len(losses) == 60
-    assert np.mean(losses[-5:]) < 0.5 * np.mean(losses[:5])
+    # Most features in this fixture are independent noise, which no model
+    # can reconstruct; only the population signal is learnable, so the loss
+    # falls toward that noise floor rather than toward zero.
+    assert np.mean(losses[-5:]) < 0.9 * np.mean(losses[:5])
+
+
+def test_constant_features_do_not_blow_up_the_loss():
+    # 30 genes -> 20 zero-padded PCA dimensions; half the morphology vector
+    # zero-padded, as VGG16's 512-dim embedding is. Neither carries
+    # information, so neither may dominate the (variance-scaled) loss.
+    morphology, adata, _population = _tissue(0)
+    padded = np.concatenate([morphology, np.zeros_like(morphology)], axis=1)
+
+    _base, losses = pretrain_fusion([(padded, adata)], epochs=30, lr=3e-3, seed=0)
+
+    assert losses[0] < 10  # standardized targets start near 1 per modality
+    assert losses[-1] < losses[0]
 
 
 def test_pretraining_is_deterministic():

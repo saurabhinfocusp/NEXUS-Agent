@@ -123,6 +123,18 @@ def _adjacency(adata: ad.AnnData) -> torch.Tensor:
     return adjacency
 
 
+def _feature_scale(features: torch.Tensor) -> torch.Tensor:
+    """Per-feature standard deviation, with constant features left unscaled
+    (scale 1). Constant features are routine, not an edge case: VGG16's
+    512-dim embedding is zero-padded to 1024, and a PCA fitted on fewer
+    than 50 genes/cells is zero-padded too. Dividing their reconstruction
+    error by a near-zero deviation would let features that carry no
+    information dominate the loss by many orders of magnitude.
+    """
+    std = features.std(dim=0)
+    return torch.where(std > 1e-6, std, torch.ones_like(std))
+
+
 def _serialize(model: GraphFusionTransformer, projector: ExpressionProjector) -> bytes:
     buffer = io.BytesIO()
     torch.save(
@@ -208,10 +220,13 @@ def pretrain_fusion(
             m = torch.tensor(np.asarray(morphology), dtype=torch.float32)
             e = torch.tensor(projector.transform(adata), dtype=torch.float32)
             prepared.append((m, e, _adjacency(adata)))
-        # Per-feature scale, so neither modality's reconstruction error
-        # dominates the loss merely because its features are larger.
-        m_scale = torch.cat([m for m, _e, _a in prepared]).std(dim=0).clamp_min(1e-6)
-        e_scale = torch.cat([e for _m, e, _a in prepared]).std(dim=0).clamp_min(1e-6)
+        # Reconstruction targets are standardized per feature, so neither
+        # modality's error dominates the loss merely because its features
+        # are larger or sit far from zero. The encoder still sees raw inputs.
+        all_m = torch.cat([m for m, _e, _a in prepared])
+        all_e = torch.cat([e for _m, e, _a in prepared])
+        m_mean, m_scale = all_m.mean(dim=0), _feature_scale(all_m)
+        e_mean, e_scale = all_e.mean(dim=0), _feature_scale(all_e)
 
         parameters = [*model.parameters(), *decode_expression.parameters(), *decode_morphology.parameters()]
         optimizer = torch.optim.Adam(parameters, lr=lr)
@@ -233,9 +248,9 @@ def pretrain_fusion(
                 fused = model(features, adjacency)
                 loss = torch.zeros(())
                 if hide_e.any():
-                    loss = loss + (((decode_expression(fused) - e) / e_scale)[hide_e] ** 2).mean()
+                    loss = loss + ((decode_expression(fused) - (e - e_mean) / e_scale)[hide_e] ** 2).mean()
                 if hide_m.any():
-                    loss = loss + (((decode_morphology(fused) - m) / m_scale)[hide_m] ** 2).mean()
+                    loss = loss + ((decode_morphology(fused) - (m - m_mean) / m_scale)[hide_m] ** 2).mean()
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
